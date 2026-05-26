@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
@@ -28,7 +28,6 @@ import { Footer } from "@/components/footer";
 import { Navigation } from "@/components/navigation";
 import { WebhookSettings } from "@/components/WebhookSettings";
 import { PostVersionUpdate } from "@/components/PostVersionUpdate";
-import { PromptModal } from "@/pages/browse/PromptModal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -251,8 +250,6 @@ function WalletIdentityPanel({
   purchasedCount: number;
   createdCount: number;
   activeCount: number;
-  bio?: string;
-  avatarUrl?: string;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -272,13 +269,9 @@ function WalletIdentityPanel({
           <div className="relative flex flex-col gap-6 md:flex-row md:items-center">
             {/* Wallet avatar with connected indicator */}
             <div className="relative shrink-0">
-              {avatarUrl ? (
-                <img src={avatarUrl} alt="Avatar" className="h-24 w-24 rounded-2xl object-cover border border-cyan-200/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]" />
-              ) : (
-                <div className="flex h-24 w-24 items-center justify-center rounded-2xl border border-cyan-200/20 bg-gradient-to-br from-cyan-200/15 to-sky-400/10 text-cyan-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
-                  <Wallet className="h-11 w-11" />
-                </div>
-              )}
+              <div className="flex h-24 w-24 items-center justify-center rounded-2xl border border-cyan-200/20 bg-gradient-to-br from-cyan-200/15 to-sky-400/10 text-cyan-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
+                <Wallet className="h-11 w-11" />
+              </div>
               <div className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[#0d1117] bg-emerald-400">
                 <CheckCircle2 className="h-3 w-3 text-slate-950" />
               </div>
@@ -296,11 +289,6 @@ function WalletIdentityPanel({
               <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white md:text-4xl">
                 {shortenAddress(address)}
               </h1>
-              {bio && (
-                <p className="mt-2 text-sm text-slate-300 italic max-w-lg">
-                  {bio}
-                </p>
-              )}
               <button
                 type="button"
                 onClick={handleCopy}
@@ -608,25 +596,16 @@ function CreatedPromptCard({
 }
 
 export default function ProfilePage() {
-  const { address: routeAddress } = useParams<{ address: string }>();
   const queryClient = useQueryClient();
-  const { address: walletAddress, network, signMessage, signTransaction } = useWallet();
-  
-  const address = routeAddress || walletAddress;
-  const isOwner = address === walletAddress;
-
+  const { address, network, signMessage, signTransaction } = useWallet();
   const { xlm, isLoading: isBalanceLoading } = useWalletBalance();
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busyPromptId, setBusyPromptId] = useState<string | null>(null);
-  const [selectedUnlockPromptId, setSelectedUnlockPromptId] = useState<string | null>(null);
   const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
-  
-  // Mock lightweight metadata
-  const metadata = {
-    bio: address ? `Creator and collector of fine prompts on the Stellar network.` : undefined,
-    avatarUrl: "",
-  };
+  const [unlockedPrompts, setUnlockedPrompts] = useState<Record<string, string>>(
+    {},
+  );
 
   const createdQuery = useQuery({
     queryKey: ["created-prompts", address],
@@ -720,12 +699,25 @@ export default function ProfilePage() {
   };
 
   const handleUnlock = async (promptId: bigint) => {
-    if (!isOwner) {
-      updateError("You can only unlock prompts you own.");
+    if (!address || !signMessage) {
+      updateError("Connect a wallet with SEP-43 message signing to unlock prompts.");
       return;
     }
-    // Launch the PromptModal for unlock recovery integration
-    setSelectedUnlockPromptId(promptId.toString());
+    setBusyPromptId(promptId.toString());
+    try {
+      const response = await unlockPromptContent(address, promptId, signMessage);
+      setUnlockedPrompts((current) => ({
+        ...current,
+        [promptId.toString()]: response.plaintext,
+      }));
+      updateStatus("Prompt unlocked. You can re-open it from this library.");
+    } catch (error) {
+      updateError(
+        error instanceof Error ? error.message : "Failed to unlock prompt.",
+      );
+    } finally {
+      setBusyPromptId(null);
+    }
   };
 
   return (
@@ -735,19 +727,17 @@ export default function ProfilePage() {
         <section className="flex flex-col md:flex-row md:items-center justify-between gap-6 rounded-[2rem] border border-white/10 bg-slate-950/60 p-8 shadow-[0_32px_120px_-64px_rgba(16,185,129,0.45)]">
           <div className="space-y-4">
             <p className="text-sm uppercase tracking-[0.35em] text-emerald-300">
-              {isOwner ? "Wallet profile" : "Public profile"}
+              Wallet profile
             </p>
-            <h1 className="text-4xl font-semibold">
-              {isOwner ? "My prompt licenses" : "Prompt Portfolio"}
-            </h1>
+            <h1 className="text-4xl font-semibold">My prompt licenses</h1>
             <p className="max-w-xl text-sm leading-7 text-slate-300">
-              {isOwner 
-                ? "Manage listings you created and reopen prompts you purchased. This page reads directly from the Stellar contract and uses the unlock API only when you request the decrypted plaintext." 
-                : "View the public inventory and collection of this user."}
+              Manage listings you created and reopen prompts you purchased. This
+              page reads directly from the Stellar contract and uses the unlock API
+              only when you request the decrypted plaintext.
             </p>
           </div>
 
-          {address && isOwner && (
+          {address && (
             <div className="flex flex-col gap-4 rounded-3xl border border-white/5 bg-white/5 p-6 backdrop-blur-sm min-w-[300px]">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
@@ -794,8 +784,6 @@ export default function ProfilePage() {
               purchasedCount={purchasedPrompts.length}
               createdCount={createdPrompts.length}
               activeCount={activeListingCount}
-              bio={metadata.bio}
-              avatarUrl={metadata.avatarUrl}
             />
 
             <div className="space-y-3">
@@ -828,7 +816,7 @@ export default function ProfilePage() {
                     className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-slate-400 transition-all data-[state=active]:bg-cyan-200 data-[state=active]:text-slate-950 data-[state=active]:shadow-sm"
                   >
                     <LibraryBig className="h-4 w-4" />
-                    {isOwner ? "My Library" : "Library"}
+                    My Library
                     <span className="ml-1 rounded-full bg-slate-950/10 px-1.5 py-0.5 text-xs">
                       {purchasedPrompts.length}
                     </span>
@@ -838,7 +826,7 @@ export default function ProfilePage() {
                     className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-slate-400 transition-all data-[state=active]:bg-amber-300 data-[state=active]:text-slate-950 data-[state=active]:shadow-sm"
                   >
                     <Boxes className="h-4 w-4" />
-                    {isOwner ? "My Inventory" : "Inventory"}
+                    My Inventory
                     <span className="ml-1 rounded-full bg-slate-950/10 px-1.5 py-0.5 text-xs">
                       {createdPrompts.length}
                     </span>
@@ -866,7 +854,8 @@ export default function ProfilePage() {
                         <PurchasedPromptCard
                           key={prompt.id.toString()}
                           prompt={prompt}
-                          isBusy={busyPromptId === prompt.id.toString() || selectedUnlockPromptId === prompt.id.toString()}
+                          isBusy={busyPromptId === prompt.id.toString()}
+                          plaintext={unlockedPrompts[prompt.id.toString()]}
                           onUnlock={(promptId) => void handleUnlock(promptId)}
                         />
                       ))}
@@ -912,19 +901,10 @@ export default function ProfilePage() {
                       ))}
                     </div>
                   )}
-                  {isOwner && <WebhookSettings walletAddress={address} />}
+                  <WebhookSettings walletAddress={address} />
                 </TabsContent>
               </Tabs>
             </section>
-            
-            {/* Unlock Recovery Integration */}
-            {selectedUnlockPromptId && (
-              <PromptModal
-                itemId={selectedUnlockPromptId}
-                isOpen={!!selectedUnlockPromptId}
-                onClose={() => setSelectedUnlockPromptId(null)}
-              />
-            )}
           </>
         )}
       </div>

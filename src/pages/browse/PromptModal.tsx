@@ -2,7 +2,7 @@ import React, { useState, useContext, useEffect, useRef } from "react";
 import { WalletContext } from "../../providers/WalletProvider";
 import { useAsyncTransaction } from "../../components/useAsyncTransaction";
 import { PromptHashClient } from "../../lib/stellar/promptHashClient";
-import { unlockPrompt, UnlockError } from "../../lib/prompts/unlock";
+import { unlockPrompt } from "../../lib/prompts/unlock";
 import { Skeleton } from "../../components/Skeleton";
 import { StatusBanner } from "../../components/StatusBanner";
 import {
@@ -21,15 +21,14 @@ import { StarRating } from "../../components/prompts/StarRating";
 import { ReviewClient } from "../../lib/reviews/reviewClient";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-export type PurchaseState =
-  | "idle"
-  | "wallet_approval"
-  | "submitting"
-  | "confirming"
-  | "purchased_locked"
-  | "unlocking"
-  | "unlocked"
-  | "error";
+export type BuyerStatus =
+  | "IDLE"
+  | "AWAITING_APPROVAL"
+  | "CONFIRMING"
+  | "PURCHASED_LOCKED"
+  | "UNLOCKING"
+  | "SUCCESS"
+  | "ERROR";
 
 interface PromptModalProps {
   itemId: string;
@@ -47,7 +46,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
   const wallet = useContext(WalletContext);
   const queryClient = useQueryClient();
 
-  const [status, setStatus] = useState<PurchaseState>("idle");
+  const [status, setStatus] = useState<BuyerStatus>("IDLE");
   const [txHash, setTxHash] = useState<string>("");
   const [secretContent, setSecretContent] = useState<string>("");
   const [isCheckingAccess, setIsCheckingAccess] = useState(false);
@@ -77,8 +76,8 @@ export const PromptModal: React.FC<PromptModalProps> = ({
     if (isOpen && wallet?.address) {
       setIsCheckingAccess(true);
       PromptHashClient.checkAccess(itemId, wallet.address)
-        .then((hasAccess) => setStatus(hasAccess ? "purchased_locked" : "idle"))
-        .catch(() => setStatus("idle"))
+        .then((hasAccess) => setStatus(hasAccess ? "PURCHASED_LOCKED" : "IDLE"))
+        .catch(() => setStatus("IDLE"))
         .finally(() => setIsCheckingAccess(false));
     }
   }, [isOpen, itemId, wallet?.address]);
@@ -93,14 +92,12 @@ export const PromptModal: React.FC<PromptModalProps> = ({
       return await unlockPrompt(itemId, hash, wallet.signMessage);
     },
     {
-      onOptimistic: () => setStatus("unlocking"),
+      onOptimistic: () => setStatus("UNLOCKING"),
       onSuccess: (data) => {
         setSecretContent(data.decryptedContent);
-        setStatus("unlocked");
+        setStatus("SUCCESS");
       },
-      onError: (err) => {
-        setStatus("purchased_locked");
-      },
+      onError: () => setStatus("PURCHASED_LOCKED"),
     },
   );
 
@@ -111,24 +108,19 @@ export const PromptModal: React.FC<PromptModalProps> = ({
   } = useAsyncTransaction(
     async () => {
       if (!wallet?.address) throw new Error("Wallet connection required.");
-      setStatus("wallet_approval");
+      setStatus("AWAITING_APPROVAL");
       const mockHash = "tx_" + Math.random().toString(16).slice(2, 14);
       setTxHash(mockHash);
-      setStatus("submitting");
-      const result = await PromptHashClient.purchasePrompt(itemId, wallet.address);
-      setStatus("confirming");
-      
-      // Critical: refresh access after purchase
-      await PromptHashClient.refreshAccess(itemId, wallet.address);
-      return result;
+      setStatus("CONFIRMING");
+      return await PromptHashClient.purchasePrompt(itemId, wallet.address);
     },
     {
       onSuccess: (data) => {
-        setStatus("unlocking");
+        setStatus("UNLOCKING");
         onRefresh?.();
         runUnlock(data.txHash || txHash).catch(() => {});
       },
-      onError: () => setStatus("error"),
+      onError: () => setStatus("ERROR"),
     },
   );
 
@@ -170,7 +162,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
           ) : (
             <div className="space-y-6">
               {/* TRANSACTION STAGES */}
-              {(status === "idle" || status === "error") && (
+              {(status === "IDLE" || status === "ERROR") && (
                 <div className="space-y-6">
                   <div className="p-5 rounded-2xl bg-white/5 border border-white/5 flex gap-4 items-start">
                     <ShieldCheck className="w-6 h-6 text-emerald-400 shrink-0" />
@@ -185,7 +177,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                     </div>
                   </div>
 
-                  {status === "error" && purchaseError && (
+                  {status === "ERROR" && purchaseError && (
                     <StatusBanner
                       status="error"
                       message={purchaseError.message}
@@ -202,34 +194,23 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                 </div>
               )}
 
-              {status === "wallet_approval" && (
+              {status === "AWAITING_APPROVAL" && (
                 <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center">
                   <div className="relative">
                     <Loader2 className="w-12 h-12 text-emerald-500 animate-spin" />
                     <div className="absolute inset-0 blur-xl bg-emerald-500/20" />
                   </div>
                   <p className="text-slate-200 font-bold text-lg italic tracking-tight">
-                    Waiting for wallet approval...
+                    Confirming in Wallet...
                   </p>
                 </div>
               )}
 
-              {status === "submitting" && (
-                <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center">
-                  <div className="relative">
-                    <Loader2 className="w-12 h-12 text-emerald-500 animate-spin" />
-                  </div>
-                  <p className="text-slate-200 font-bold text-lg italic tracking-tight">
-                    Submitting transaction...
-                  </p>
-                </div>
-              )}
-
-              {status === "confirming" && (
+              {status === "CONFIRMING" && (
                 <div className="py-6 text-center">
                   <StatusBanner
                     status="pending"
-                    message="Waiting for on-chain confirmation..."
+                    message="Broadcasting to Stellar..."
                   />
                   {txHash && (
                     <a
@@ -244,19 +225,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                 </div>
               )}
 
-              {status === "unlocking" && (
-                <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center">
-                  <div className="relative">
-                    <LockKeyhole className="w-12 h-12 text-emerald-500 animate-pulse" />
-                  </div>
-                  <p className="text-slate-200 font-bold text-lg tracking-tight">
-                    Verifying wallet ownership...
-                  </p>
-                  <p className="text-sm text-slate-400">Decrypting prompt...</p>
-                </div>
-              )}
-
-              {status === "purchased_locked" && (
+              {status === "PURCHASED_LOCKED" && (
                 <div className="space-y-6 text-center">
                   <div className="p-6 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex flex-col items-center">
                     <LockKeyhole className="w-8 h-8 text-emerald-400 mb-3" />
@@ -270,11 +239,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                   {unlockError && (
                     <StatusBanner
                       status="error"
-                      message={
-                        unlockError instanceof UnlockError
-                          ? `${unlockError.message} (${unlockError.code})`
-                          : unlockError.message
-                      }
+                      message={unlockError.message}
                     />
                   )}
 
@@ -283,12 +248,12 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                     disabled={isUnlocking}
                     className="w-full h-14 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-2xl transition-all shadow-[0_0_20px_-5px_rgba(16,185,129,0.4)]"
                   >
-                    {isUnlocking ? "Unlocking..." : "Retry Unlock"}
+                    {isUnlocking ? "Unlocking..." : "Decrypt Content"}
                   </button>
                 </div>
               )}
 
-              {status === "unlocked" && (
+              {status === "SUCCESS" && (
                 <div className="animate-in fade-in zoom-in duration-300">
                   <div className="flex items-center gap-2 text-emerald-400 font-bold mb-4">
                     <CheckCircle className="h-5 w-5" /> Access Granted

@@ -35,8 +35,6 @@ export interface PromptRecord {
   active: boolean;
 }
 
-export type TxState = "pending_signature" | "submitting" | "confirming" | "success" | "failed";
-
 export type CreatePromptInput = unknown;
 
 export class PromptHashClient {
@@ -50,24 +48,8 @@ export class PromptHashClient {
   ): Promise<boolean> {
     warnMockUse();
     return new Promise((resolve) => {
-      // Mock duplicate purchase detection: random delay, sometimes false
-      setTimeout(() => {
-        // Here we could simulate real on-chain access check
-        resolve(false);
-      }, 1000); 
+      setTimeout(() => resolve(false), 1000); // Mock: Assume false initially
     });
-  }
-
-  /**
-   * Helper to refresh access explicitly after confirmation
-   */
-  static async refreshAccess(
-    config: PromptHashConfig | string,
-    address: string,
-    itemId?: string,
-  ): Promise<boolean> {
-    // In real implementation this would bypass cache and force a refetch
-    return this.checkAccess(config, address, itemId);
   }
 
   /**
@@ -82,17 +64,12 @@ export class PromptHashClient {
     return new Promise((resolve, reject) => {
       const delay = options?.delay ?? 2000;
       setTimeout(() => {
-        if (options?.forceFailure === "duplicate_purchase") {
-           return reject(new Error("duplicate_purchase"));
-        }
         if (options?.forceFailure) {
           return reject(new Error(options.forceFailure));
         }
 
         const mockHash =
           "tx_" + Math.random().toString(16).slice(2, 14).padStart(12, "0");
-        
-        // Mock polling/confirmation
         resolve({ txHash: mockHash, success: true });
       }, delay);
     });
