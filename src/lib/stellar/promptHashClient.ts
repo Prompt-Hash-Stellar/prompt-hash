@@ -33,6 +33,10 @@ export interface PromptRecord {
   imageUrl: string;
   salesCount: number;
   active: boolean;
+  contentHash: string;
+  encryptedPrompt?: string;
+  encryptionIv?: string;
+  wrappedKey?: string;
 }
 
 export type CreatePromptInput = unknown;
@@ -92,6 +96,7 @@ export class PromptHashClient {
         imageUrl: "",
         salesCount: 12,
         active: true,
+        contentHash: "mock_hash_000000000001",
       },
       {
         id: 2n,
@@ -104,6 +109,7 @@ export class PromptHashClient {
         imageUrl: "",
         salesCount: 45,
         active: true,
+        contentHash: "mock_hash_000000000002",
       },
     ];
   }

@@ -5,6 +5,7 @@ import { PromptHashClient } from "../../lib/stellar/promptHashClient";
 import { unlockPrompt } from "../../lib/prompts/unlock";
 import { Skeleton } from "../../components/Skeleton";
 import { StatusBanner } from "../../components/StatusBanner";
+import { UnlockExplainer } from "../../components/UnlockExplainer";
 import {
   CheckCircle,
   Loader2,
@@ -226,8 +227,8 @@ export const PromptModal: React.FC<PromptModalProps> = ({
               )}
 
               {status === "PURCHASED_LOCKED" && (
-                <div className="space-y-6 text-center">
-                  <div className="p-6 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex flex-col items-center">
+                <div className="space-y-6">
+                  <div className="p-6 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 flex flex-col items-center text-center">
                     <LockKeyhole className="w-8 h-8 text-emerald-400 mb-3" />
                     <h4 className="font-bold text-white">License Verified</h4>
                     <p className="text-xs text-slate-400 mt-2">
@@ -235,6 +236,16 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                       decrypt.
                     </p>
                   </div>
+
+                  {/* Explain what the signature does — always visible before and during signing */}
+                  <UnlockExplainer
+                    state="signing"
+                    onRetry={
+                      unlockError
+                        ? () => runUnlock(txHash || "existing")
+                        : undefined
+                    }
+                  />
 
                   {unlockError && (
                     <StatusBanner

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
@@ -26,6 +26,8 @@ import {
 } from "lucide-react";
 import { Footer } from "@/components/footer";
 import { Navigation } from "@/components/navigation";
+import { TipButton } from "@/components/TipButton";
+import { UnlockExplainer, type UnlockState } from "@/components/UnlockExplainer";
 import { WebhookSettings } from "@/components/WebhookSettings";
 import { PostVersionUpdate } from "@/components/PostVersionUpdate";
 import { Badge } from "@/components/ui/badge";
@@ -343,14 +345,17 @@ function PurchasedPromptCard({
   prompt,
   isBusy,
   plaintext,
+  unlockState,
   onUnlock,
 }: {
   prompt: PromptRecord;
   isBusy: boolean;
   plaintext?: string;
+  unlockState: UnlockState;
   onUnlock: Handler<[bigint]>;
 }) {
   const isUnlocked = Boolean(plaintext);
+  const showExplainer = unlockState !== "idle" && unlockState !== "success";
 
   return (
     <article className="overflow-hidden rounded-xl border border-white/10 bg-[#0f1419] transition-colors hover:border-white/[0.18]">
@@ -362,7 +367,6 @@ function PurchasedPromptCard({
             alt={prompt.title}
             className="h-full w-full object-cover"
           />
-          {/* Mobile-only access state pill */}
           <div className="absolute bottom-3 left-3 md:hidden">
             <span
               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium backdrop-blur-sm ${
@@ -423,11 +427,27 @@ function PurchasedPromptCard({
             </div>
           </div>
 
+          {/* Unlock explainer for active / error states */}
+          {showExplainer && (
+            <div className="mt-4">
+              <UnlockExplainer
+                state={unlockState}
+                onRetry={
+                  unlockState === "rejected" ||
+                  unlockState === "expired" ||
+                  unlockState === "failed"
+                    ? () => onUnlock(prompt.id)
+                    : undefined
+                }
+              />
+            </div>
+          )}
+
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <Button
               className="h-10 bg-cyan-200 text-slate-950 hover:bg-cyan-100 disabled:opacity-50"
               onClick={() => onUnlock(prompt.id)}
-              disabled={isBusy}
+              disabled={isBusy || unlockState === "signing" || unlockState === "verifying"}
             >
               {isBusy ? (
                 <>
@@ -597,15 +617,19 @@ function CreatedPromptCard({
 
 export default function ProfilePage() {
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
+  const viewAddress = searchParams.get("address");
   const { address, network, signMessage, signTransaction } = useWallet();
   const { xlm, isLoading: isBalanceLoading } = useWalletBalance();
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busyPromptId, setBusyPromptId] = useState<string | null>(null);
   const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
-  const [unlockedPrompts, setUnlockedPrompts] = useState<Record<string, string>>(
-    {},
-  );
+  const [unlockedPrompts, setUnlockedPrompts] = useState<Record<string, string>>({});
+  const [unlockStates, setUnlockStates] = useState<Record<string, UnlockState>>({});
+
+  const isPublicView = Boolean(viewAddress) && viewAddress !== address;
+  const profileAddress = viewAddress ?? address;
 
   const createdQuery = useQuery({
     queryKey: ["created-prompts", address],
@@ -698,23 +722,35 @@ export default function ProfilePage() {
     }
   };
 
+  const setUnlockState = (id: string, state: UnlockState) =>
+    setUnlockStates((current) => ({ ...current, [id]: state }));
+
   const handleUnlock = async (promptId: bigint) => {
     if (!address || !signMessage) {
       updateError("Connect a wallet with SEP-43 message signing to unlock prompts.");
       return;
     }
-    setBusyPromptId(promptId.toString());
+    const id = promptId.toString();
+    setBusyPromptId(id);
+    setUnlockState(id, "signing");
     try {
       const response = await unlockPromptContent(address, promptId, signMessage);
       setUnlockedPrompts((current) => ({
         ...current,
-        [promptId.toString()]: response.plaintext,
+        [id]: response.plaintext,
       }));
+      setUnlockState(id, "success");
       updateStatus("Prompt unlocked. You can re-open it from this library.");
     } catch (error) {
-      updateError(
-        error instanceof Error ? error.message : "Failed to unlock prompt.",
-      );
+      const msg = error instanceof Error ? error.message : "";
+      if (msg.toLowerCase().includes("declined") || msg.toLowerCase().includes("rejected")) {
+        setUnlockState(id, "rejected");
+      } else if (msg.toLowerCase().includes("expired")) {
+        setUnlockState(id, "expired");
+      } else {
+        setUnlockState(id, "failed");
+      }
+      updateError(msg || "Failed to unlock prompt.");
     } finally {
       setBusyPromptId(null);
     }
@@ -723,21 +759,24 @@ export default function ProfilePage() {
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_60%_40%_at_0%_0%,rgba(34,211,238,0.1),transparent),radial-gradient(ellipse_50%_30%_at_100%_5%,rgba(251,191,36,0.07),transparent),linear-gradient(180deg,#080b0f_0%,#0d1117_50%,#080b0f_100%)] text-white">
       <Navigation />
-      <main className="mx-auto max-w-7xl px-6 py-10">
+      <main className="mx-auto max-w-7xl px-6 py-10 space-y-8">
+        {/* Page header */}
         <section className="flex flex-col md:flex-row md:items-center justify-between gap-6 rounded-[2rem] border border-white/10 bg-slate-950/60 p-8 shadow-[0_32px_120px_-64px_rgba(16,185,129,0.45)]">
           <div className="space-y-4">
             <p className="text-sm uppercase tracking-[0.35em] text-emerald-300">
-              Wallet profile
+              {isPublicView ? "Creator profile" : "Wallet profile"}
             </p>
-            <h1 className="text-4xl font-semibold">My prompt licenses</h1>
+            <h1 className="text-4xl font-semibold">
+              {isPublicView ? "Prompt creator" : "My prompt licenses"}
+            </h1>
             <p className="max-w-xl text-sm leading-7 text-slate-300">
-              Manage listings you created and reopen prompts you purchased. This
-              page reads directly from the Stellar contract and uses the unlock API
-              only when you request the decrypted plaintext.
+              {isPublicView
+                ? "View this creator's public prompt listings and send a tip to support their work."
+                : "Manage listings you created and reopen prompts you purchased. This page reads directly from the Stellar contract and uses the unlock API only when you request the decrypted plaintext."}
             </p>
           </div>
 
-          {address && (
+          {address && !isPublicView && (
             <div className="flex flex-col gap-4 rounded-3xl border border-white/5 bg-white/5 p-6 backdrop-blur-sm min-w-[300px]">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
@@ -759,7 +798,7 @@ export default function ProfilePage() {
                 </p>
                 <div className="mt-1 flex items-baseline gap-2">
                   <span className="text-2xl font-bold text-white">
-                    {balanceLoading ? (
+                    {isBalanceLoading ? (
                       <Loader2 className="h-5 w-5 animate-spin" />
                     ) : (
                       xlm
@@ -770,146 +809,155 @@ export default function ProfilePage() {
               </div>
             </div>
           )}
-        </section>
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:py-10">
-        {!address ? (
-          <DisconnectedProfile />
-        ) : (
-          <>
-            <WalletIdentityPanel
-              address={address}
-              network={network}
-              balanceLabel={xlm}
-              isBalanceLoading={isBalanceLoading}
-              purchasedCount={purchasedPrompts.length}
-              createdCount={createdPrompts.length}
-              activeCount={activeListingCount}
-            />
 
-            <div className="space-y-3">
-              {statusMessage ? (
-                <AlertBanner tone="success" message={statusMessage} />
-              ) : null}
-              {errorMessage ? (
-                <AlertBanner tone="error" message={errorMessage} />
-              ) : null}
+          {/* Tip jar for public profile views */}
+          {isPublicView && profileAddress && (
+            <div className="min-w-[280px]">
+              <TipButton creatorAddress={profileAddress} />
             </div>
+          )}
+        </section>
 
-            <section className="mt-10">
-              <Tabs defaultValue="purchased" className="space-y-0">
-                <div className="mb-6">
-                  <p className="text-xs uppercase tracking-[0.24em] text-cyan-200">
-                    Prompt access
-                  </p>
-                  <h2 className="mt-2 text-3xl font-semibold text-white">
-                    Library &amp; Inventory
-                  </h2>
-                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-                    Licensed prompts are optimized for re-entry and unlock. Created
-                    prompts stay focused on listing control.
-                  </p>
-                </div>
+        <div>
+          {!address ? (
+            <DisconnectedProfile />
+          ) : (
+            <>
+              <WalletIdentityPanel
+                address={address}
+                network={network}
+                balanceLabel={xlm}
+                isBalanceLoading={isBalanceLoading}
+                purchasedCount={purchasedPrompts.length}
+                createdCount={createdPrompts.length}
+                activeCount={activeListingCount}
+              />
 
-                <TabsList className="mb-6 grid h-auto w-full grid-cols-2 rounded-xl border border-white/10 bg-white/[0.03] p-1.5 sm:w-[34rem]">
-                  <TabsTrigger
-                    value="purchased"
-                    className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-slate-400 transition-all data-[state=active]:bg-cyan-200 data-[state=active]:text-slate-950 data-[state=active]:shadow-sm"
-                  >
-                    <LibraryBig className="h-4 w-4" />
-                    My Library
-                    <span className="ml-1 rounded-full bg-slate-950/10 px-1.5 py-0.5 text-xs">
-                      {purchasedPrompts.length}
-                    </span>
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="created"
-                    className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-slate-400 transition-all data-[state=active]:bg-amber-300 data-[state=active]:text-slate-950 data-[state=active]:shadow-sm"
-                  >
-                    <Boxes className="h-4 w-4" />
-                    My Inventory
-                    <span className="ml-1 rounded-full bg-slate-950/10 px-1.5 py-0.5 text-xs">
-                      {createdPrompts.length}
-                    </span>
-                  </TabsTrigger>
-                </TabsList>
+              <div className="space-y-3 mt-4">
+                {statusMessage ? (
+                  <AlertBanner tone="success" message={statusMessage} />
+                ) : null}
+                {errorMessage ? (
+                  <AlertBanner tone="error" message={errorMessage} />
+                ) : null}
+              </div>
 
-                <TabsContent value="purchased" className="mt-0 space-y-4">
-                  {purchasedQuery.isLoading ? (
-                    <LoadingState label="Loading your licensed prompts..." />
-                  ) : purchasedPrompts.length === 0 ? (
-                    <EmptyState
-                      icon={LibraryBig}
-                      title="Your library is empty"
-                      body="When this wallet buys access, prompts appear here with a direct unlock path back to the protected content."
-                      action={{
-                        label: "Browse marketplace",
-                        to: "/browse",
-                        icon: ShoppingBag,
-                      }}
-                      accent="cyan"
-                    />
-                  ) : (
-                    <div className="space-y-4">
-                      {purchasedPrompts.map((prompt) => (
-                        <PurchasedPromptCard
-                          key={prompt.id.toString()}
-                          prompt={prompt}
-                          isBusy={busyPromptId === prompt.id.toString()}
-                          plaintext={unlockedPrompts[prompt.id.toString()]}
-                          onUnlock={(promptId) => void handleUnlock(promptId)}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </TabsContent>
+              <section className="mt-10">
+                <Tabs defaultValue="purchased" className="space-y-0">
+                  <div className="mb-6">
+                    <p className="text-xs uppercase tracking-[0.24em] text-cyan-200">
+                      Prompt access
+                    </p>
+                    <h2 className="mt-2 text-3xl font-semibold text-white">
+                      Library &amp; Inventory
+                    </h2>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+                      Licensed prompts are optimized for re-entry and unlock. Created
+                      prompts stay focused on listing control.
+                    </p>
+                  </div>
 
-                <TabsContent value="created" className="mt-0 space-y-4">
-                  {createdQuery.isLoading ? (
-                    <LoadingState label="Loading your creator inventory..." />
-                  ) : createdPrompts.length === 0 ? (
-                    <EmptyState
-                      icon={Boxes}
-                      title="No creator inventory"
-                      body="Create your first encrypted prompt listing to see pricing controls, sales counts, and listing states here."
-                      action={{
-                        label: "Create listing",
-                        to: "/sell",
-                        icon: ArrowUpRight,
-                      }}
-                      accent="amber"
-                    />
-                  ) : (
-                    <div className="space-y-4">
-                      {createdPrompts.map((prompt) => (
-                        <CreatedPromptCard
-                          key={prompt.id.toString()}
-                          prompt={prompt}
-                          isBusy={busyPromptId === prompt.id.toString()}
-                          priceDraft={mergedDrafts[prompt.id.toString()]}
-                          walletAddress={address}
-                          onDraftChange={(value) =>
-                            setPriceDrafts((current) => ({
-                              ...current,
-                              [prompt.id.toString()]: value,
-                            }))
-                          }
-                          onUpdatePrice={(promptId) => void handleUpdatePrice(promptId)}
-                          onToggleStatus={(promptId, active) =>
-                            void handleToggleSaleStatus(promptId, active)
-                          }
-                        />
-                      ))}
-                    </div>
-                  )}
-                  <WebhookSettings walletAddress={address} />
-                </TabsContent>
-              </Tabs>
-            </section>
-          </>
-        )}
-      </div>
-    </main>
-    <Footer />
+                  <TabsList className="mb-6 grid h-auto w-full grid-cols-2 rounded-xl border border-white/10 bg-white/[0.03] p-1.5 sm:w-[34rem]">
+                    <TabsTrigger
+                      value="purchased"
+                      className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-slate-400 transition-all data-[state=active]:bg-cyan-200 data-[state=active]:text-slate-950 data-[state=active]:shadow-sm"
+                    >
+                      <LibraryBig className="h-4 w-4" />
+                      My Library
+                      <span className="ml-1 rounded-full bg-slate-950/10 px-1.5 py-0.5 text-xs">
+                        {purchasedPrompts.length}
+                      </span>
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="created"
+                      className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-slate-400 transition-all data-[state=active]:bg-amber-300 data-[state=active]:text-slate-950 data-[state=active]:shadow-sm"
+                    >
+                      <Boxes className="h-4 w-4" />
+                      My Inventory
+                      <span className="ml-1 rounded-full bg-slate-950/10 px-1.5 py-0.5 text-xs">
+                        {createdPrompts.length}
+                      </span>
+                    </TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="purchased" className="mt-0 space-y-4">
+                    {purchasedQuery.isLoading ? (
+                      <LoadingState label="Loading your licensed prompts..." />
+                    ) : purchasedPrompts.length === 0 ? (
+                      <EmptyState
+                        icon={LibraryBig}
+                        title="Your library is empty"
+                        body="When this wallet buys access, prompts appear here with a direct unlock path back to the protected content."
+                        action={{
+                          label: "Browse marketplace",
+                          to: "/browse",
+                          icon: ShoppingBag,
+                        }}
+                        accent="cyan"
+                      />
+                    ) : (
+                      <div className="space-y-4">
+                        {purchasedPrompts.map((prompt) => (
+                          <PurchasedPromptCard
+                            key={prompt.id.toString()}
+                            prompt={prompt}
+                            isBusy={busyPromptId === prompt.id.toString()}
+                            plaintext={unlockedPrompts[prompt.id.toString()]}
+                            unlockState={unlockStates[prompt.id.toString()] ?? "idle"}
+                            onUnlock={(promptId) => void handleUnlock(promptId)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="created" className="mt-0 space-y-4">
+                    {createdQuery.isLoading ? (
+                      <LoadingState label="Loading your creator inventory..." />
+                    ) : createdPrompts.length === 0 ? (
+                      <EmptyState
+                        icon={Boxes}
+                        title="No creator inventory"
+                        body="Create your first encrypted prompt listing to see pricing controls, sales counts, and listing states here."
+                        action={{
+                          label: "Create listing",
+                          to: "/sell",
+                          icon: ArrowUpRight,
+                        }}
+                        accent="amber"
+                      />
+                    ) : (
+                      <div className="space-y-4">
+                        {createdPrompts.map((prompt) => (
+                          <CreatedPromptCard
+                            key={prompt.id.toString()}
+                            prompt={prompt}
+                            isBusy={busyPromptId === prompt.id.toString()}
+                            priceDraft={mergedDrafts[prompt.id.toString()]}
+                            walletAddress={address}
+                            onDraftChange={(value) =>
+                              setPriceDrafts((current) => ({
+                                ...current,
+                                [prompt.id.toString()]: value,
+                              }))
+                            }
+                            onUpdatePrice={(promptId) => void handleUpdatePrice(promptId)}
+                            onToggleStatus={(promptId, active) =>
+                              void handleToggleSaleStatus(promptId, active)
+                            }
+                          />
+                        ))}
+                      </div>
+                    )}
+                    <WebhookSettings walletAddress={address} />
+                  </TabsContent>
+                </Tabs>
+              </section>
+            </>
+          )}
+        </div>
+      </main>
+      <Footer />
     </div>
   );
 }
