@@ -128,9 +128,9 @@ export const PromptModal: React.FC<PromptModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-md sm:p-4">
       <div
-        className="bg-slate-900 border border-white/10 rounded-[32px] w-full max-w-lg shadow-2xl relative overflow-hidden"
+        className="relative max-h-[94vh] w-full max-w-lg overflow-y-auto rounded-[28px] border border-white/10 bg-slate-900 shadow-2xl sm:rounded-[32px]"
         role="dialog"
       >
         {/* Header Decor */}
@@ -140,12 +140,13 @@ export const PromptModal: React.FC<PromptModalProps> = ({
           ref={closeButtonRef}
           onClick={onClose}
           className="absolute top-6 right-6 p-2 rounded-full bg-white/5 text-slate-400 hover:text-white transition-all z-10"
+          aria-label="Close prompt modal"
         >
           <X className="w-4 h-4" />
         </button>
 
-        <div className="p-8">
-          <div className="mb-8">
+        <div className="p-5 sm:p-8">
+          <div className="mb-6 sm:mb-8">
             <h2 className="text-2xl font-bold text-white mb-2">
               Acquire License
             </h2>
@@ -326,7 +327,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
 
         {/* Reviews Tab */}
         {reviewData && (
-          <div className="p-8 border-t border-white/10">
+          <div className="border-t border-white/10 p-5 sm:p-8">
             <div className="mb-6">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xl font-bold text-white">Reviews</h3>
