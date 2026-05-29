@@ -1,4 +1,4 @@
-import { ChangeEvent, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertCircle, Loader2 } from "lucide-react";
 import {
@@ -48,22 +48,35 @@ interface FormData {
   priceXlm: string;
 }
 
-export function CreatePromptForm() {
+interface CreatePromptFormProps {
+  onCreated?: () => void;
+}
+
+const DRAFT_STORAGE_PREFIX = "prompt-hash:create-draft:";
+
+const createEmptyFormData = (): FormData => ({
+  imageUrl: "",
+  title: "",
+  category: "",
+  previewText: "",
+  fullPrompt: "",
+  priceXlm: "2",
+});
+
+export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
   const navigate = useNavigate();
   const { address, signTransaction } = useWallet();
-  const [formData, setFormData] = useState<FormData>({
-    imageUrl: "",
-    title: "",
-    category: "",
-    previewText: "",
-    fullPrompt: "",
-    priceXlm: "2",
-  });
+  const draftStorageKey = address ? `${DRAFT_STORAGE_PREFIX}${address}` : null;
+  const draftLoadRef = useRef<string | null>(null);
+  const skipNextAutosaveRef = useRef(false);
+  const [formData, setFormData] = useState<FormData>(createEmptyFormData);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [showChecklist, setShowChecklist] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
 
   const isConfigured = useMemo(
     () =>
@@ -82,6 +95,79 @@ export function CreatePromptForm() {
   );
 
   const checklistHasFailures = checklistItems.some((i) => i.status === "fail");
+
+  const clearDraft = () => {
+    if (draftStorageKey) {
+      window.localStorage.removeItem(draftStorageKey);
+    }
+    skipNextAutosaveRef.current = true;
+    setDraftRestored(false);
+    setLastSavedAt(null);
+  };
+
+  useEffect(() => {
+    draftLoadRef.current = null;
+    setDraftRestored(false);
+    setLastSavedAt(null);
+
+    if (!draftStorageKey) {
+      setFormData(createEmptyFormData());
+      return;
+    }
+
+    const rawDraft = window.localStorage.getItem(draftStorageKey);
+    if (!rawDraft) {
+      skipNextAutosaveRef.current = true;
+      setFormData(createEmptyFormData());
+      draftLoadRef.current = draftStorageKey;
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(rawDraft) as {
+        formData?: Partial<FormData>;
+        savedAt?: string;
+      };
+
+      if (parsed.formData) {
+        setFormData((current) => ({
+          ...current,
+          ...parsed.formData,
+        }));
+        setDraftRestored(true);
+        setLastSavedAt(parsed.savedAt ?? null);
+      }
+    } catch {
+      window.localStorage.removeItem(draftStorageKey);
+    } finally {
+      draftLoadRef.current = draftStorageKey;
+    }
+  }, [draftStorageKey]);
+
+  useEffect(() => {
+    if (!draftStorageKey || draftLoadRef.current !== draftStorageKey || isSubmitting) {
+      return;
+    }
+
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false;
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      const savedAt = new Date().toISOString();
+      window.localStorage.setItem(
+        draftStorageKey,
+        JSON.stringify({
+          savedAt,
+          formData,
+        }),
+      );
+      setLastSavedAt(savedAt);
+    }, 500);
+
+    return () => window.clearTimeout(timeout);
+  }, [draftStorageKey, formData, isSubmitting]);
 
   const handleChange = (
     event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
@@ -210,15 +296,13 @@ export function CreatePromptForm() {
       );
 
       setSuccessMessage(`Prompt #${promptId.toString()} created successfully.`);
-      setFormData({
-        imageUrl: "",
-        title: "",
-        category: "",
-        previewText: "",
-        fullPrompt: "",
-        priceXlm: "2",
-      });
-      navigate("/browse");
+      clearDraft();
+      setFormData(createEmptyFormData());
+      if (onCreated) {
+        onCreated();
+      } else {
+        navigate("/browse");
+      }
     } catch (error) {
       setSubmitError(
         error instanceof Error ? error.message : "Failed to create prompt.",
@@ -380,6 +464,35 @@ export function CreatePromptForm() {
 
       {showChecklist ? (
         <ListingQualityChecklist items={checklistItems} />
+      ) : null}
+
+      {(draftRestored || lastSavedAt) && !isSubmitting ? (
+        <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-medium">
+                {draftRestored ? "Recovered local draft." : "Draft saved locally."}
+              </p>
+              <p className="text-xs text-cyan-100/80">
+                Stored only on this device and cleared after publish or discard.
+                {lastSavedAt ? ` Last saved ${new Date(lastSavedAt).toLocaleString()}.` : ""}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 border-cyan-300/30 bg-cyan-500/10 text-cyan-50 hover:bg-cyan-500/20"
+              onClick={() => {
+                clearDraft();
+                setFormData(createEmptyFormData());
+                setErrors({});
+                setShowChecklist(false);
+              }}
+            >
+              Discard draft
+            </Button>
+          </div>
+        </div>
       ) : null}
 
       <Button

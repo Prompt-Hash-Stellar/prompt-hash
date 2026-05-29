@@ -5,6 +5,9 @@ import Prompt from "../models/Prompt";
 import Purchase from "../models/Purchase";
 import { streamText } from "ai";
 import { openai } from "@ai-sdk/openai";
+import {
+  validateListingMetadata,
+} from "../services/listingValidation";
 
 const API_BASE_URL = "https://secret-ai-gateway.onrender.com";
 
@@ -84,6 +87,21 @@ export const CreatePrompt = async (
       });
     }
 
+    const { normalized, errors } = validateListingMetadata({
+      image,
+      title,
+      content,
+      price,
+      category,
+    });
+
+    if (Object.keys(errors).length > 0) {
+      return res.status(422).json({
+        error: "Invalid listing metadata",
+        fields: errors,
+      });
+    }
+
     // Find the user by wallet address
     const user = await User.findOne({
       walletAddress: walletAddress.toLowerCase(),
@@ -96,12 +114,12 @@ export const CreatePrompt = async (
     }
 
     const newPrompt = new Prompt({
-      image,
-      title,
-      content,
+      image: normalized.image,
+      title: normalized.title,
+      content: normalized.content,
       owner: user._id, // Set the owner as the user's ObjectId
-      price,
-      category: category || "Other",
+      price: normalized.price,
+      category: normalized.category,
       rating: 3,
     });
 
@@ -352,7 +370,7 @@ export const SavePrompt = async (
     }
     const purchase = await Purchase.findOneAndUpdate(
       { buyerWallet: walletAddress.toLowerCase(), promptId },
-      { saved: true },
+      { saved: true, versionIndex: 1, txHash: "" },
       { upsert: true, new: true },
     );
     return res.status(200).json({ saved: true, purchaseId: purchase._id });
@@ -429,6 +447,21 @@ export const PublishPrompt = async (
     const { id } = req.params;
     const prompt = await Prompt.findById(id);
     if (!prompt) return res.status(404).json({ error: 'Prompt not found' });
+
+    const { errors } = validateListingMetadata({
+      image: prompt.image,
+      title: prompt.title,
+      content: prompt.content,
+      price: prompt.price,
+      category: prompt.category,
+    });
+
+    if (Object.keys(errors).length > 0) {
+      return res.status(422).json({
+        error: 'Prompt is not publishable',
+        fields: errors,
+      });
+    }
 
     const missingFields = PUBLISH_REQUIRED_FIELDS.filter(
       (f) => !prompt[f as keyof typeof prompt],
