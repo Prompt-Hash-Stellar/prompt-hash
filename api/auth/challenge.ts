@@ -4,6 +4,7 @@ import { checkRateLimit } from "../../src/lib/observability/rateLimiter";
 import { metrics } from "../../src/lib/observability/metrics";
 import { recordAuditEvent } from "../../server/src/services/auditTrail";
 import { apiError, ErrorCode } from "../../src/lib/api/errorCodes";
+import { isPlaceholder } from "../../src/lib/validation/envValidator";
 
 async function handler(req: any, res: any) {
   if (req.method !== "POST") {
@@ -47,8 +48,8 @@ async function handler(req: any, res: any) {
   res.setHeader("X-RateLimit-Reset", rateLimit.reset);
 
   const secret = process.env.CHALLENGE_TOKEN_SECRET;
-  if (!secret) {
-    req.logger.error("CHALLENGE_TOKEN_SECRET is not configured.");
+  if (!secret || isPlaceholder(secret) || secret.length < 16) {
+    req.logger.error("CHALLENGE_TOKEN_SECRET is not configured correctly.");
     res.status(500).json(apiError(ErrorCode.CONFIGURATION_ERROR, "Configuration error."));
     return;
   }

@@ -20,6 +20,15 @@ import { metrics } from "../../src/lib/observability/metrics";
 import { dispatchEvent } from "../../server/src/services/webhookDispatcher";
 import { recordAuditEvent } from "../../server/src/services/auditTrail";
 import { apiError, ErrorCode } from "../../src/lib/api/errorCodes";
+import { validateUnlockSecrets } from "../../src/lib/validation/envValidator";
+
+// Fail-fast module load validation
+try {
+  validateUnlockSecrets();
+} catch (err: any) {
+  console.error(err.message);
+}
+
 
 /**
  * Get active secrets for token verification
@@ -73,6 +82,14 @@ function getServerConfig(): PromptHashConfig {
 }
 
 async function handler(req: any, res: any) {
+  try {
+    validateUnlockSecrets();
+  } catch (err: any) {
+    req.logger.error("Configuration validation failed", { error: err.message });
+    res.status(500).json(apiError(ErrorCode.CONFIGURATION_ERROR, "Configuration error."));
+    return;
+  }
+
   if (req.method !== "POST") {
     res.status(405).json(apiError(ErrorCode.METHOD_NOT_ALLOWED, "Method not allowed."));
     return;

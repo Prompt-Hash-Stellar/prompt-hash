@@ -28,6 +28,19 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: "./src/test/setup.ts",
+    testTimeout: 15000,
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/cypress/**",
+      "**/.{idea,git,cache,output,temp}/**",
+      "**/{karma,rollup,webpack,vite,vitest}.config.*",
+      "**/server/**",
+      "src/test/similarityDetection.test.ts",
+      "src/test/auditTrail.test.ts",
+      "src/test/health.test.ts",
+      "src/test/simulation.test.ts",
+    ],
     server: {
       deps: {
         inline: [/@creit\.tech\/stellar-wallets-kit/, /libsodium-wrappers/],

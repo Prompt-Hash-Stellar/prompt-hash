@@ -232,6 +232,7 @@ const MyPrompts = () => {
                         }))
                       }
                       className="border-white/10 bg-white/5 text-slate-100"
+                      aria-label={`Price in XLM for ${prompt.title}`}
                     />
                     <Button
                       className="bg-emerald-400 text-slate-950 hover:bg-emerald-300"

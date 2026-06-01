@@ -13,17 +13,18 @@ vi.mock('@creit.tech/stellar-wallets-kit', async (importOriginal) => {
     freighter: vi.fn(),
     albedo: vi.fn(),
     xbull: vi.fn(),
-    StellarWalletsKit: vi.fn().mockImplementation(() => ({
-      setWallet: vi.fn(),
-      getAddress: vi.fn().mockResolvedValue({ address: 'GABC123' }),
-      getNetwork: vi.fn().mockResolvedValue({ 
+    StellarWalletsKit: vi.fn().mockImplementation(function (this: any) {
+      this.setWallet = vi.fn();
+      this.getAddress = vi.fn().mockResolvedValue({ address: 'GABC123' });
+      this.getNetwork = vi.fn().mockResolvedValue({ 
         network: 'TESTNET', 
         networkPassphrase: 'Test SDF Network ; September 2015' 
-      }),
-      signTransaction: vi.fn(),
-      signMessage: vi.fn(),
-      disconnect: vi.fn().mockResolvedValue(undefined), // Add this!
-    })),
+      });
+      this.signTransaction = vi.fn();
+      this.signMessage = vi.fn();
+      this.disconnect = vi.fn().mockResolvedValue(undefined);
+      return this;
+    }),
   };
 });
 

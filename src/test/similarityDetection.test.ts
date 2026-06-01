@@ -9,9 +9,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ---------------------------------------------------------------------------
 // Mock Prompt model before importing the service
 // ---------------------------------------------------------------------------
-const mockFindLean = vi.fn();
-const mockFind = vi.fn(() => ({ lean: mockFindLean }));
-const mockFindOneAndUpdate = vi.fn();
+const { mockFindLean, mockFind, mockFindOneAndUpdate } = vi.hoisted(() => {
+  const mLean = vi.fn();
+  return {
+    mockFindLean: mLean,
+    mockFind: vi.fn(() => ({ lean: mLean })),
+    mockFindOneAndUpdate: vi.fn(),
+  };
+});
 
 vi.mock("../../server/src/models/Prompt", () => ({
   default: {

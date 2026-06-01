@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import wasm from "vite-plugin-wasm";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
@@ -7,7 +7,46 @@ import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 
 // https://vite.dev/config/
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+
+  // Required frontend variables
+  const requiredFrontend = [
+    "PUBLIC_STELLAR_NETWORK",
+    "PUBLIC_STELLAR_NETWORK_PASSPHRASE",
+    "PUBLIC_STELLAR_RPC_URL",
+    "PUBLIC_STELLAR_HORIZON_URL",
+    "PUBLIC_PROMPT_HASH_CONTRACT_ID",
+    "PUBLIC_STELLAR_NATIVE_ASSET_CONTRACT_ID",
+    "PUBLIC_STELLAR_SIMULATION_ACCOUNT",
+    "PUBLIC_UNLOCK_PUBLIC_KEY",
+  ];
+
+  const PLACEHOLDER_PATTERNS = [
+    /^replace-with/i,
+    /^BASE64_/i,
+    /^[CG]X{10,}/,
+    /^your-/i,
+    /^<.*>$/,
+  ];
+  const isPlaceholder = (val: string) => PLACEHOLDER_PATTERNS.some((re) => re.test(val));
+
+  const errors: string[] = [];
+  for (const key of requiredFrontend) {
+    const val = env[key] || process.env[key];
+    if (!val) {
+      errors.push(`${key} is not set.`);
+    } else if (isPlaceholder(val)) {
+      errors.push(`${key} has a placeholder value.`);
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(
+      `\n❌ [Vite Build/Startup Env Validation Failed]:\n  - ${errors.join("\n  - ")}\n\nPlease check your .env file and ensure correct configurations are loaded.\n`
+    );
+  }
+
   return {
     plugins: [
       react(),

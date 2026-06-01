@@ -68,7 +68,7 @@ describe("creator dashboard refresh integration coverage", () => {
     expect(await screen.findByText("Revenue memo builder")).toBeInTheDocument();
     expect(screen.getByText("2 XLM")).toBeInTheDocument();
 
-    const priceInput = screen.getByLabelText("Price for Revenue memo builder");
+    const priceInput = screen.getByLabelText("Price in XLM for Revenue memo builder");
     await userEvent.clear(priceInput);
     await userEvent.type(priceInput, "3.5");
     await userEvent.click(screen.getByRole("button", { name: /update price/i }));

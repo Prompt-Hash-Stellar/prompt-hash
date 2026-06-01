@@ -8,11 +8,19 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ---------------------------------------------------------------------------
 // Mock AuditLog model before importing the service under test
 // ---------------------------------------------------------------------------
-const mockCreate = vi.fn();
-const mockLean = vi.fn();
-const mockLimit = vi.fn(() => ({ lean: mockLean }));
-const mockSort = vi.fn(() => ({ limit: mockLimit }));
-const mockFind = vi.fn(() => ({ sort: mockSort }));
+const { mockCreate, mockLean, mockLimit, mockSort, mockFind } = vi.hoisted(() => {
+  const mLean = vi.fn();
+  const mLimit = vi.fn(() => ({ lean: mLean }));
+  const mSort = vi.fn(() => ({ limit: mLimit }));
+  const mFind = vi.fn(() => ({ sort: mSort }));
+  return {
+    mockCreate: vi.fn(),
+    mockLean: mLean,
+    mockLimit: mLimit,
+    mockSort: mSort,
+    mockFind: mFind,
+  };
+});
 
 vi.mock("../../server/src/models/AuditLog", () => ({
   AuditLog: {

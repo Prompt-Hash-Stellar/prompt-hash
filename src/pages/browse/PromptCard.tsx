@@ -95,13 +95,67 @@ export const PromptCard = ({
       </div>
 
       <CardContent className="flex flex-1 flex-col p-4 pt-4 sm:p-6 sm:pt-5">
+        {/* Modern Stateful Badges Row */}
+        <div className="flex flex-wrap gap-2 mb-3">
+          {/* Active/Inactive Badge */}
+          {prompt.active ? (
+            <span
+              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+              data-testid="badge-active"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Active
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-500/10 text-slate-400 border border-slate-500/20"
+              data-testid="badge-inactive"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+              Inactive
+            </span>
+          )}
+
+          {/* Purchased/Unlockable Badge */}
+          {hasAccess ? (
+            <span
+              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20"
+              data-testid="badge-purchased"
+            >
+              Purchased
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+              data-testid="badge-unlockable"
+            >
+              Unlockable
+            </span>
+          )}
+
+          {/* Verification Badge */}
+          {prompt.contentHash && (
+            <span
+              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20"
+              data-testid="badge-verified"
+            >
+              <ShieldCheck className="h-3 w-3 text-amber-400" />
+              Verified
+            </span>
+          )}
+        </div>
+
         <div className="flex-1 space-y-3">
           <div className="flex items-start justify-between gap-3 sm:gap-4">
             <h3 className="text-base font-bold leading-tight transition-colors group-hover:text-emerald-400 sm:text-lg">
               {prompt.title}
             </h3>
             <div className="text-right shrink-0">
-              <p className="text-lg font-black text-white sm:text-xl">
+              <p
+                className="text-lg font-black text-emerald-400 sm:text-xl font-mono tracking-tight"
+                aria-label={`Price: ${formatPriceLabel(prompt.priceStroops)}`}
+                data-testid="price-label"
+              >
                 {formatPriceLabel(prompt.priceStroops)}
               </p>
               <p className="text-[10px] text-slate-500 uppercase tracking-tighter">

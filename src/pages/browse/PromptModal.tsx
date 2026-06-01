@@ -54,6 +54,8 @@ export const PromptModal: React.FC<PromptModalProps> = ({
   const [showReviewForm, setShowReviewForm] = useState(false);
 
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const lastActiveElementRef = useRef<HTMLElement | null>(null);
 
   // Fetch reviews for this prompt
   const { data: reviewData, isLoading: reviewsLoading } = useQuery({
@@ -64,12 +66,48 @@ export const PromptModal: React.FC<PromptModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      lastActiveElementRef.current = document.activeElement as HTMLElement;
       setTimeout(() => closeButtonRef.current?.focus(), 0);
+
       const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === "Escape") onClose();
+        if (e.key === "Escape") {
+          onClose();
+          return;
+        }
+
+        if (e.key === "Tab") {
+          if (!modalRef.current) return;
+          const focusableElements = modalRef.current.querySelectorAll(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          );
+          if (focusableElements.length === 0) return;
+
+          const firstElement = focusableElements[0] as HTMLElement;
+          const lastElement = focusableElements[focusableElements.length - 1] as HTMLElement;
+
+          if (e.shiftKey) {
+            // Shift + Tab
+            if (document.activeElement === firstElement) {
+              lastElement.focus();
+              e.preventDefault();
+            }
+          } else {
+            // Tab
+            if (document.activeElement === lastElement) {
+              firstElement.focus();
+              e.preventDefault();
+            }
+          }
+        }
       };
+
       document.addEventListener("keydown", handleKeyDown);
-      return () => document.removeEventListener("keydown", handleKeyDown);
+      return () => {
+        document.removeEventListener("keydown", handleKeyDown);
+        if (lastActiveElementRef.current) {
+          lastActiveElementRef.current.focus();
+        }
+      };
     }
   }, [isOpen, onClose]);
 
@@ -130,6 +168,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-md sm:p-4">
       <div
+        ref={modalRef}
         className="relative max-h-[94vh] w-full max-w-lg overflow-y-auto rounded-[28px] border border-white/10 bg-slate-900 shadow-2xl sm:rounded-[32px]"
         role="dialog"
         aria-modal="true"
@@ -190,7 +229,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                   )}
 
                   <button
-                    onClick={() => runPurchase()}
+                    onClick={() => runPurchase().catch(() => {})}
                     disabled={isPurchasing}
                     className="group w-full h-14 bg-white text-slate-950 hover:bg-emerald-400 font-black rounded-2xl transition-all flex items-center justify-center gap-2"
                   >
@@ -200,9 +239,9 @@ export const PromptModal: React.FC<PromptModalProps> = ({
               )}
 
               {status === "AWAITING_APPROVAL" && (
-                <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center">
+                <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center" role="status" aria-live="polite">
                   <div className="relative">
-                    <Loader2 className="w-12 h-12 text-emerald-500 animate-spin" />
+                    <Loader2 className="w-12 h-12 text-emerald-500 animate-spin" aria-hidden="true" />
                     <div className="absolute inset-0 blur-xl bg-emerald-500/20" />
                   </div>
                   <p className="text-slate-200 font-bold text-lg italic tracking-tight">
@@ -212,7 +251,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
               )}
 
               {status === "CONFIRMING" && (
-                <div className="py-6 text-center">
+                <div className="py-6 text-center" role="status" aria-live="polite">
                   <StatusBanner
                     status="pending"
                     message="Broadcasting to Stellar..."
@@ -259,7 +298,7 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                   )}
 
                   <button
-                    onClick={() => runUnlock(txHash || "existing")}
+                    onClick={() => runUnlock(txHash || "existing").catch(() => {})}
                     disabled={isUnlocking}
                     className="w-full h-14 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-2xl transition-all shadow-[0_0_20px_-5px_rgba(16,185,129,0.4)]"
                   >

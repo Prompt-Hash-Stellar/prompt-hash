@@ -27,6 +27,7 @@ import {
 import { stroopsToXlmString } from "@/lib/stellar/format";
 import { PromptCard } from "./PromptCard";
 import { PromptModal } from "./PromptModal";
+import { invalidateAllPromptQueries } from "@/hooks/useContractSync";
 
 const ITEMS_PER_PAGE = 9;
 const ENABLE_INFINITE_SCROLL = true;

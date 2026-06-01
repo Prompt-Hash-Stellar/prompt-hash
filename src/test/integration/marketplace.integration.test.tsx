@@ -25,9 +25,14 @@ vi.mock("@/lib/stellar/promptHashClient", () => ({
   getAllPrompts: (...args: unknown[]) => getAllPromptsMock(...args),
   hasAccess: (...args: unknown[]) => hasAccessMock(...args),
   buyPromptAccess: (...args: unknown[]) => buyPromptAccessMock(...args),
+  PromptHashClient: {
+    checkAccess: (...args: unknown[]) => hasAccessMock(...args),
+    purchasePrompt: (...args: unknown[]) => buyPromptAccessMock(...args),
+  },
 }));
 
 vi.mock("@/lib/prompts/unlock", () => ({
+  unlockPrompt: (...args: unknown[]) => unlockPromptContentMock(...args),
   unlockPromptContent: (...args: unknown[]) => unlockPromptContentMock(...args),
 }));
 
@@ -80,6 +85,7 @@ describe("marketplace purchase and unlock integration coverage", () => {
       title: prompt.title,
       contentHash: prompt.contentHash,
       plaintext: "Unlocked private prompt body.",
+      decryptedContent: "Unlocked private prompt body.",
     });
 
     const signTransaction = vi.fn().mockResolvedValue({
@@ -107,39 +113,39 @@ describe("marketplace purchase and unlock integration coverage", () => {
 
     await screen.findByText(prompt.title);
 
-    const cardButton = await screen.findByRole("button", { name: /^buy access$/i });
+    // Click prompt title or the card itself to open the modal dialog
+    const cardButton = await screen.findByRole("button", { name: `Open ${prompt.title}` });
     await userEvent.click(cardButton);
 
     const dialog = await screen.findByRole("dialog", {
-      name: prompt.title,
+      name: /acquire license/i,
     });
     await userEvent.click(
-      within(dialog).getByRole("button", { name: /^buy access$/i }),
+      within(dialog).getByRole("button", { name: /confirm & purchase/i }),
     );
 
     await waitFor(() => {
       expect(buyPromptAccessMock).toHaveBeenCalledWith(
-        expect.anything(),
-        { signTransaction },
+        "7",
         "GBUYERACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789",
-        7n,
-        5_0000000n,
       );
     });
 
     expect(unlockPromptContentMock).toHaveBeenCalledWith(
-      "GBUYERACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789",
-      7n,
+      "7",
+      "purchase-hash",
       signMessage,
+      "GBUYERACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789",
     );
     expect(
       await within(dialog).findByText("Unlocked private prompt body."),
     ).toBeInTheDocument();
 
     await waitFor(() => {
+      // PromptCard shows "Owned" button now
       expect(
-        screen.getAllByRole("button", { name: /view full prompt/i }),
-      ).toHaveLength(2);
+        screen.getAllByRole("button", { name: /owned/i }),
+      ).toHaveLength(1);
     });
   });
 
@@ -158,6 +164,7 @@ describe("marketplace purchase and unlock integration coverage", () => {
         title: prompt.title,
         contentHash: prompt.contentHash,
         plaintext: "Recovered prompt plaintext.",
+        decryptedContent: "Recovered prompt plaintext.",
       });
 
     const signMessage = vi.fn().mockResolvedValue({
@@ -180,15 +187,16 @@ describe("marketplace purchase and unlock integration coverage", () => {
     );
 
     await screen.findByText(prompt.title);
-    await userEvent.click(
-      await screen.findByRole("button", { name: /^view full prompt$/i }),
-    );
+    
+    // Click the owned prompt card to open the modal
+    const cardButton = await screen.findByRole("button", { name: `Open ${prompt.title}` });
+    await userEvent.click(cardButton);
 
     const dialog = await screen.findByRole("dialog", {
-      name: prompt.title,
+      name: /acquire license/i,
     });
     const unlockButton = within(dialog).getByRole("button", {
-      name: /^view full prompt$/i,
+      name: /decrypt content/i,
     });
 
     await userEvent.click(unlockButton);
@@ -196,7 +204,10 @@ describe("marketplace purchase and unlock integration coverage", () => {
       await within(dialog).findByText("Unlock service temporarily unavailable."),
     ).toBeInTheDocument();
 
-    await userEvent.click(unlockButton);
+    const freshUnlockButton = within(dialog).getByRole("button", {
+      name: /decrypt content/i,
+    });
+    await userEvent.click(freshUnlockButton);
     expect(
       await within(dialog).findByText("Recovered prompt plaintext."),
     ).toBeInTheDocument();
