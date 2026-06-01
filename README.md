@@ -177,6 +177,7 @@ The serverless unlock flow handles challenge token issuance, signature verificat
 #### Observability & Production Hardening
 
 The unlock service is hardened for production use with the following features:
+
 - **Rate Limiting**: Request-level limits keyed by IP and wallet to prevent brute-force and DDoS attacks.
 - **Structured Logging**: JSON-formatted logs with request ID tracking and sensitive data redaction.
 - **Operational Metrics**: Real-time tracking of unlock success/failure rates, invalid signatures, and rate limit hits.
@@ -232,6 +233,10 @@ cd server && npm install && cd ..
 
 ## Local Development Setup
 
+For the complete contributor workflow, including required tools, environment variables, frontend startup, Soroban contract tests, unlock endpoint testing, and troubleshooting, see [docs/contributing.md](docs/contributing.md).
+
+Quick start:
+
 1. Copy the environment file:
 
 ```bash
@@ -239,29 +244,38 @@ cp .env.example .env
 ```
 
 2. Fill in the required Stellar and unlock-service variables.
-3. Start the frontend:
+3. Install dependencies:
+
+```bash
+yarn install
+```
+
+4. Start the frontend:
 
 ```bash
 yarn dev
 ```
 
-4. Optional: run the auxiliary Node server:
+5. Optional: run the auxiliary Node server:
 
 ```bash
 cd server
+npm install
 npm run dev
 ```
 
-5. Run contract tests:
+6. Run contract tests:
 
 ```bash
 cargo test -p prompt-hash
 ```
 
-6. Run the frontend test suite:
+7. Run frontend checks before opening a PR:
 
 ```bash
-yarn test:frontend
+yarn lint
+yarn test:frontend --run api/prompts/unlock.test.ts src/lib/auth/challenge.test.ts src/lib/crypto/promptCrypto.test.ts
+yarn build
 ```
 
 ## Setup Validation

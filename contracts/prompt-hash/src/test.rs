@@ -76,6 +76,34 @@ fn fund_buyer(
     xlm_client.approve(buyer, spender, &amount, &1_000);
 }
 
+fn create_prompt_with_splits(
+    env: &Env,
+    client: &PromptHashContractClient,
+    creator: &Address,
+    title: &str,
+    price_stroops: i128,
+    asset: &Address,
+    splits: Vec<Split>,
+) -> u128 {
+    client.create_prompt(
+        creator,
+        &String::from_str(env, "https://example.com/prompt.png"),
+        &String::from_str(env, title),
+        &String::from_str(env, "Software Development"),
+        &String::from_str(env, "Generate a production-ready implementation plan."),
+        &String::from_str(env, "ciphertext"),
+        &String::from_str(env, "iv"),
+        &String::from_str(env, "wrapped-key"),
+        &hash(env, 17),
+        &ListingConfig {
+            price: price_stroops,
+            asset: asset.clone(),
+            expires_at: 0,
+            splits,
+        },
+    )
+}
+
 #[test]
 fn test_create_prompt_stores_encrypted_fields() {
     let env: Env = Default::default();
@@ -196,6 +224,182 @@ fn test_buy_prompt_grants_access_to_multiple_buyers_and_tracks_exact_fees() {
         xlm_client.balance(&context.fee_wallet),
         fee_start + (single_fee * 2) as i128
     );
+}
+
+#[test]
+fn test_fee_routing_pays_seller_and_platform_wallet_for_exact_purchase() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 25_000;
+    let prompt_id = create_prompt(
+        &env,
+        &client,
+        &creator,
+        "Fee Routed Prompt",
+        price,
+        &context.xlm,
+    );
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    let buyer_start = xlm_client.balance(&buyer);
+    let seller_start = xlm_client.balance(&creator);
+    let fee_start = xlm_client.balance(&context.fee_wallet);
+
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+
+    let expected_fee = price * 500 / 10_000;
+    let expected_seller_payout = price - expected_fee;
+
+    assert_eq!(xlm_client.balance(&buyer), buyer_start - price);
+    assert_eq!(
+        xlm_client.balance(&creator),
+        seller_start + expected_seller_payout
+    );
+    assert_eq!(
+        xlm_client.balance(&context.fee_wallet),
+        fee_start + expected_fee
+    );
+    assert!(client.has_access(&buyer, &prompt_id));
+    assert_eq!(client.get_prompt(&prompt_id).sales_count, 1);
+}
+
+#[test]
+fn test_small_price_fee_rounding_keeps_fractional_fee_with_seller() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 19;
+    let prompt_id = create_prompt(
+        &env,
+        &client,
+        &creator,
+        "Tiny Rounded Prompt",
+        price,
+        &context.xlm,
+    );
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    let seller_start = xlm_client.balance(&creator);
+    let fee_start = xlm_client.balance(&context.fee_wallet);
+
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+
+    assert_eq!(price * 500 / 10_000, 0);
+    assert_eq!(xlm_client.balance(&creator), seller_start + price);
+    assert_eq!(xlm_client.balance(&context.fee_wallet), fee_start);
+    assert!(client.has_access(&buyer, &prompt_id));
+}
+
+#[test]
+fn test_seller_payout_split_rounding_uses_integer_stroops() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let co_creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 101;
+
+    let mut splits = Vec::<Split>::new(&env);
+    splits.push_back(Split {
+        recipient: co_creator.clone(),
+        bps: 333,
+    });
+
+    let prompt_id = create_prompt_with_splits(
+        &env,
+        &client,
+        &creator,
+        "Rounded Split Prompt",
+        price,
+        &context.xlm,
+        splits,
+    );
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    let seller_start = xlm_client.balance(&creator);
+    let co_creator_start = xlm_client.balance(&co_creator);
+    let fee_start = xlm_client.balance(&context.fee_wallet);
+
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+
+    let expected_fee = price * 500 / 10_000;
+    let expected_split = price * 333 / 10_000;
+    let expected_seller_payout = price - expected_fee - expected_split;
+
+    assert_eq!(expected_fee, 5);
+    assert_eq!(expected_split, 3);
+    assert_eq!(
+        xlm_client.balance(&creator),
+        seller_start + expected_seller_payout
+    );
+    assert_eq!(
+        xlm_client.balance(&co_creator),
+        co_creator_start + expected_split
+    );
+    assert_eq!(
+        xlm_client.balance(&context.fee_wallet),
+        fee_start + expected_fee
+    );
+}
+
+#[test]
+fn test_failed_purchase_does_not_grant_access_or_route_partial_payouts() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 10_000;
+    let prompt_id = create_prompt(
+        &env,
+        &client,
+        &creator,
+        "Failed Purchase Prompt",
+        price,
+        &context.xlm,
+    );
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    let buyer_start = xlm_client.balance(&buyer);
+    let seller_start = xlm_client.balance(&creator);
+    let fee_start = xlm_client.balance(&context.fee_wallet);
+
+    let result = client.try_buy_prompt(
+        &buyer,
+        &prompt_id,
+        &None::<Address>,
+        &(price - 1),
+        &None::<Bytes>,
+    );
+
+    match result {
+        Err(Ok(Error::InvalidPaymentAmount)) => {}
+        other => panic!("expected InvalidPaymentAmount, got {:?}", other),
+    }
+
+    assert_eq!(xlm_client.balance(&buyer), buyer_start);
+    assert_eq!(xlm_client.balance(&creator), seller_start);
+    assert_eq!(xlm_client.balance(&context.fee_wallet), fee_start);
+    assert!(!client.has_access(&buyer, &prompt_id));
+    assert_eq!(client.get_prompt(&prompt_id).sales_count, 0);
 }
 
 #[test]
@@ -1754,7 +1958,10 @@ fn test_only_creator_can_extend_listing() {
     let result = client.try_extend_listing(&stranger, &prompt_id, &9_000u64);
     match result {
         Err(Ok(Error::Unauthorized)) => {}
-        other => panic!("expected Unauthorized for stranger extend_listing, got {:?}", other),
+        other => panic!(
+            "expected Unauthorized for stranger extend_listing, got {:?}",
+            other
+        ),
     }
 }
 
@@ -1844,8 +2051,8 @@ fn test_buy_prompt_with_splits_distributes_correctly() {
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
 
-    let expected_fee = price * 500 / 10_000;       // 500
-    let expected_split = price * 2_000 / 10_000;   // 2_000
+    let expected_fee = price * 500 / 10_000; // 500
+    let expected_split = price * 2_000 / 10_000; // 2_000
     let expected_creator = price - expected_fee - expected_split; // 7_500
 
     assert_eq!(
@@ -1898,7 +2105,10 @@ fn test_splits_exceeding_max_bps_minus_fee_rejected() {
     );
     match result {
         Err(Ok(Error::InvalidSplits)) => {}
-        other => panic!("expected InvalidSplits for over-allocated splits, got {:?}", other),
+        other => panic!(
+            "expected InvalidSplits for over-allocated splits, got {:?}",
+            other
+        ),
     }
 }
 
@@ -1997,8 +2207,7 @@ fn test_buy_prompts_bulk_purchases_all_and_grants_access() {
     let fee_bps = 500i128;
     let expected_creator =
         (price_a - price_a * fee_bps / 10_000) + (price_b - price_b * fee_bps / 10_000);
-    let expected_fee =
-        price_a * fee_bps / 10_000 + price_b * fee_bps / 10_000;
+    let expected_fee = price_a * fee_bps / 10_000 + price_b * fee_bps / 10_000;
     assert_eq!(xlm_client.balance(&creator), expected_creator);
     assert_eq!(xlm_client.balance(&context.fee_wallet), expected_fee);
 }

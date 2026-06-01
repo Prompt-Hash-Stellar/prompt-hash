@@ -31,12 +31,22 @@ export default defineConfig(() => {
           display: "standalone",
           start_url: "/",
           icons: [
-            { src: "/icons/pwa-192x192.png", sizes: "192x192", type: "image/png" },
-            { src: "/icons/pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+            {
+              src: "/icons/pwa-192x192.png",
+              sizes: "192x192",
+              type: "image/png",
+            },
+            {
+              src: "/icons/pwa-512x512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "any maskable",
+            },
           ],
         },
         workbox: {
           globPatterns: ["**/*.{js,css,html,ico,png,svg,wasm}"],
+          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/.*\.stellar\.org\/.*/i,
@@ -60,16 +70,25 @@ export default defineConfig(() => {
       target: "esnext",
       rollupOptions: {
         output: {
-          manualChunks: {
-            "vendor-stellar": [
-              "@stellar/stellar-sdk",
-              "@stellar/stellar-base",
-              "@stellar/design-system",
-              "@creit.tech/stellar-wallets-kit",
-            ],
-            "vendor-charts": ["chart.js", "react-chartjs-2"],
-            "vendor-motion": ["framer-motion"],
-            "vendor-crypto": ["libsodium-wrappers"],
+          manualChunks(id: string) {
+            if (
+              id.includes("node_modules/@stellar") ||
+              id.includes("node_modules/@creit.tech/stellar-wallets-kit")
+            ) {
+              return "vendor-stellar";
+            }
+            if (
+              id.includes("node_modules/chart.js") ||
+              id.includes("node_modules/react-chartjs-2")
+            ) {
+              return "vendor-charts";
+            }
+            if (id.includes("node_modules/framer-motion")) {
+              return "vendor-motion";
+            }
+            if (id.includes("node_modules/libsodium")) {
+              return "vendor-crypto";
+            }
           },
         },
       },
