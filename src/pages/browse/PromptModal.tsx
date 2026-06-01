@@ -6,6 +6,7 @@ import { unlockPrompt } from "../../lib/prompts/unlock";
 import { Skeleton } from "../../components/Skeleton";
 import { StatusBanner } from "../../components/StatusBanner";
 import { UnlockExplainer } from "../../components/UnlockExplainer";
+import { copyToClipboard } from "../../lib/clipboard/secureClipboard";
 import {
   CheckCircle,
   Loader2,
@@ -15,6 +16,8 @@ import {
   ShieldCheck,
   Wallet,
   MessageSquare,
+  Copy,
+  Check,
 } from "lucide-react";
 import { ReviewForm } from "../../components/prompts/ReviewForm";
 import { ReviewList } from "../../components/prompts/ReviewList";
@@ -52,6 +55,12 @@ export const PromptModal: React.FC<PromptModalProps> = ({
   const [secretContent, setSecretContent] = useState<string>("");
   const [isCheckingAccess, setIsCheckingAccess] = useState(false);
   const [showReviewForm, setShowReviewForm] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<{
+    visible: boolean;
+    success: boolean;
+    message: string;
+  }>({ visible: false, success: false, message: "" });
+  const copyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -162,6 +171,26 @@ export const PromptModal: React.FC<PromptModalProps> = ({
       onError: () => setStatus("ERROR"),
     },
   );
+
+  const handleCopyContent = async () => {
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+    }
+
+    const result = await copyToClipboard(secretContent);
+
+    setCopyFeedback({
+      visible: true,
+      success: result.success,
+      message: result.success
+        ? "Copied to clipboard"
+        : result.error || "Failed to copy",
+    });
+
+    copyTimeoutRef.current = setTimeout(() => {
+      setCopyFeedback((prev) => ({ ...prev, visible: false }));
+    }, 3000);
+  };
 
   if (!isOpen) return null;
 
@@ -319,6 +348,38 @@ export const PromptModal: React.FC<PromptModalProps> = ({
                         {secretContent}
                       </pre>
                     </div>
+                  </div>
+
+                  <div className="mt-4 flex gap-3">
+                    <button
+                      onClick={handleCopyContent}
+                      className="flex-1 flex items-center justify-center gap-2 h-12 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 font-semibold rounded-xl transition-all border border-emerald-500/30"
+                      title="Copy prompt content to clipboard"
+                    >
+                      {copyFeedback.visible && copyFeedback.success ? (
+                        <>
+                          <Check className="h-4 w-4" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-4 w-4" />
+                          Copy
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {copyFeedback.visible && !copyFeedback.success && (
+                    <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400">
+                      {copyFeedback.message}
+                    </div>
+                  )}
+
+                  <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                    <p className="text-xs text-blue-300 leading-relaxed">
+                      Please store your purchased prompt content securely. Do not share this content publicly or with unauthorized users.
+                    </p>
                   </div>
 
                   {/* Review Section */}
