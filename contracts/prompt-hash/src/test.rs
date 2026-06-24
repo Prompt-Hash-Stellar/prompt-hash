@@ -402,6 +402,60 @@ fn test_failed_purchase_does_not_grant_access_or_route_partial_payouts() {
     assert_eq!(client.get_prompt(&prompt_id).sales_count, 0);
 }
 
+// ---------- Platform fee governance tests ----------
+
+#[test]
+fn test_admin_can_update_platform_fee_within_bounds() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    // admin sets platform fee to 300 BPS (3%)
+    client.update_platform_fee(&context.admin, &300u32);
+    assert_eq!(client.get_platform_fee(), 300u32);
+}
+
+#[test]
+fn test_unauthorized_cannot_update_platform_fee() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let stranger = Address::generate(&env);
+    let res = client.try_update_platform_fee(&stranger, &200u32);
+    match res {
+        Err(Ok(Error::Unauthorized)) => {}
+        other => panic!("expected Unauthorized, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_admin_cannot_exceed_max_platform_fee() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    // Try to set above MAX_PLATFORM_FEE (1_000 BPS). Expect FeeExceedsMaximum.
+    let res = client.try_update_platform_fee(&context.admin, &2000u32);
+    match res {
+        Err(Ok(Error::FeeExceedsMaximum)) => {}
+        other => panic!("expected FeeExceedsMaximum, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_update_platform_fee_emits_event() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    // Capture event count before
+    let before = env.events().all().len();
+    client.update_platform_fee(&context.admin, &400u32);
+    let after = env.events().all().len();
+    assert!(after >= before + 1, "expected at least one new event");
+}
+
 #[test]
 fn test_has_access_is_true_for_creator_and_buyer_but_not_stranger() {
     let env: Env = Default::default();

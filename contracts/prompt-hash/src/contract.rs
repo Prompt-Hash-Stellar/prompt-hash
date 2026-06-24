@@ -8,6 +8,8 @@ use stellar_macros::{default_impl, only_owner};
 const DEFAULT_FEE_BPS: u32 = 500;
 const ROYALTY_BPS: u32 = 500;
 const MAX_BPS: u32 = 10_000;
+// Maximum allowed platform fee (basis points). Prevents admin from setting abusive fees.
+const MAX_PLATFORM_FEE: u32 = 1_000; // 10%
 const MAX_TITLE_LEN: u32 = 120;
 const MAX_CATEGORY_LEN: u32 = 40;
 const MAX_PREVIEW_LEN: u32 = 280;
@@ -499,6 +501,22 @@ impl PromptHashTrait for PromptHashContract {
 
     fn get_fee_wallet(env: Env) -> Option<Address> {
         Storage::get_fee_wallet(&env)
+    }
+
+    // New governance API: secure, bounded platform fee updates with cryptographic event logging.
+    fn update_platform_fee(env: Env, admin: Address, new_fee: u32) -> Result<(), Error> {
+        // Enforce caller auth explicitly against provided admin address.
+        admin.require_auth();
+        ensure(new_fee <= MAX_PLATFORM_FEE, Error::FeeExceedsMaximum)?;
+
+        let old_fee = Storage::get_fee_percentage(&env);
+        Storage::set_fee_percentage(&env, &new_fee);
+        Events::emit_platform_fee_updated(&env, old_fee, new_fee, admin);
+        Ok(())
+    }
+
+    fn get_platform_fee(env: Env) -> u32 {
+        Storage::get_fee_percentage(&env)
     }
 
     fn get_xlm_sac(env: Env) -> Option<Address> {

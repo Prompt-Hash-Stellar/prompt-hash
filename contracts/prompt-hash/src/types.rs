@@ -41,6 +41,7 @@ pub enum Error {
     // #217 – collaborator split management
     DuplicateSplitRecipient = 32,
     TooManySplits = 33,
+    FeeExceedsMaximum = 34,
 }
 
 #[contracttype]
@@ -288,6 +289,9 @@ pub trait PromptHashTrait {
     fn get_fee_wallet(env: Env) -> Option<Address>;
     fn set_referral_percentage(env: Env, new_referral_percentage: u32) -> Result<(), Error>;
     fn get_referral_percentage(env: Env) -> u32;
+    // New platform fee governance API
+    fn update_platform_fee(env: Env, admin: Address, new_fee: u32) -> Result<(), Error>;
+    fn get_platform_fee(env: Env) -> u32;
     fn set_pause_status(env: Env, paused: bool) -> Result<(), Error>;
     fn is_paused(env: Env) -> bool;
     fn add_voucher(

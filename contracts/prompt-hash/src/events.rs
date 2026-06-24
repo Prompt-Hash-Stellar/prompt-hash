@@ -85,6 +85,13 @@ struct FeeWalletUpdated {
 }
 
 #[contractevent]
+struct PlatformFeeUpdated {
+    pub old_fee: u32,
+    pub new_fee: u32,
+    pub admin: Address,
+}
+
+#[contractevent]
 struct ListingExtended {
     #[topic]
     pub prompt_id: u128,
@@ -216,6 +223,10 @@ impl Events {
 
     pub fn emit_fee_wallet_updated(env: &Env, new_fee_wallet: Address) {
         FeeWalletUpdated { new_fee_wallet }.publish(env);
+    }
+
+    pub fn emit_platform_fee_updated(env: &Env, old_fee: u32, new_fee: u32, admin: Address) {
+        PlatformFeeUpdated { old_fee, new_fee, admin }.publish(env);
     }
 
     pub fn emit_listing_extended(env: &Env, prompt_id: u128, new_expires_at: u64) {
