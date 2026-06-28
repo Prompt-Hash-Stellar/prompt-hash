@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import connectDb from "../db/connectDb";
 import User from "../models/User";
 import Prompt from "../models/Prompt";
+import Report from "../models/Report";
 import { streamText } from "ai";
 import { openai } from "@ai-sdk/openai";
 import {
@@ -339,9 +340,6 @@ export const SubmitPromptReport = async (
       });
     }
 
-    // Import Report model dynamically
-    const Report = require("../models/Report").default;
-
     // Create new report
     const newReport = new Report({
       promptId,
@@ -382,9 +380,6 @@ export const GetPromptReports = async (
 
     const { searchParams } = new URL(req.url);
     const promptId = searchParams.get("promptId");
-
-    // Import Report model dynamically
-    const Report = require("../models/Report").default;
 
     const query: any = {};
     if (promptId) {

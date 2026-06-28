@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ReportClient, REPORT_REASONS, type ReportReason } from "./reportClient";
+import { ReportClient, REPORT_REASONS } from "./reportClient";
 
 describe("ReportClient", () => {
   beforeEach(() => {
