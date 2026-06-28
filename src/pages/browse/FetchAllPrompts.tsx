@@ -42,18 +42,22 @@ const parseXlmNumber = (value: bigint) => Number(stroopsToXlmString(value));
 
 export interface FetchAllPromptsProps {
   selectedCategory: string;
-  selectedTag: string;
+  selectedTag?: string;
   priceRange: number[];
   searchQuery: string;
   sortBy: string;
+  comparedIds?: string[];
+  onToggleCompare?: (prompt: PromptRecord) => void;
 }
 
 const FetchAllPrompts = ({
   selectedCategory,
-  selectedTag,
+  selectedTag = "",
   priceRange,
   searchQuery,
   sortBy,
+  comparedIds = [],
+  onToggleCompare,
 }: FetchAllPromptsProps) => {
   const queryClient = useQueryClient();
   const { address } = useWallet();
@@ -285,6 +289,8 @@ const FetchAllPrompts = ({
                 isSaved={savedPromptIds.has(prompt.id.toString())}
                 isSaving={savingPromptId === prompt.id.toString()}
                 onToggleSave={handleToggleSave}
+                isCompared={comparedIds.includes(prompt.id.toString())}
+                onToggleCompare={onToggleCompare}
               />
             ))}
           </div>

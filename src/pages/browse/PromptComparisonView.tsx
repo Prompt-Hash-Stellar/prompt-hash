@@ -8,7 +8,7 @@ export interface ComparisonPrompt {
   id: string;
   title: string;
   creator: string;
-  price: number;
+  price: bigint;
   category: string;
   tags?: string[];
   rating?: number;
@@ -106,7 +106,7 @@ export function PromptComparisonView({
             {/* Fields */}
             <div className="mt-3">
               <FieldRow label="Price">
-                <span className="font-bold text-cyan-300">{formatPriceLabel(prompt.price)} XLM</span>
+                <span className="font-bold text-cyan-300">{formatPriceLabel(prompt.price)}</span>
               </FieldRow>
 
               <FieldRow label="Category">

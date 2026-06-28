@@ -6,6 +6,8 @@ import {
   LockKeyhole,
   ShieldCheck,
   TrendingUp,
+  Check,
+  Plus,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +26,8 @@ export const PromptCard = ({
   isSaved,
   isSaving,
   onToggleSave,
+  isCompared = false,
+  onToggleCompare,
 }: {
   prompt: PromptRecord;
   hasAccess: boolean;
@@ -33,6 +37,9 @@ export const PromptCard = ({
   isSaving: boolean;
   // eslint-disable-next-line no-unused-vars
   onToggleSave: (_prompt: PromptRecord) => void;
+  isCompared?: boolean;
+  // eslint-disable-next-line no-unused-vars
+  onToggleCompare?: (_prompt: PromptRecord) => void;
 }) => {
   const isBestSeller = prompt.salesCount >= 10;
 
@@ -45,7 +52,11 @@ export const PromptCard = ({
 
   return (
     <Card
-      className="group relative flex flex-col border-white/5 bg-white/[0.02] hover:bg-white/[0.04] transition-all duration-300 hover:-translate-y-1 cursor-pointer overflow-hidden rounded-[24px]"
+      className={`group relative flex flex-col transition-all duration-300 hover:-translate-y-1 cursor-pointer overflow-hidden rounded-[24px] ${
+        isCompared
+          ? "border-emerald-500 bg-emerald-950/5 ring-1 ring-emerald-500/30"
+          : "border-white/5 bg-white/[0.02] hover:bg-white/[0.04]"
+      }`}
       onClick={() => openModal(prompt)}
       role="button"
       tabIndex={0}
@@ -76,7 +87,7 @@ export const PromptCard = ({
             </Badge>
           )}
         </div>
-        <div className="absolute top-4 right-4">
+        <div className="absolute top-4 right-4 flex flex-col gap-2 items-end z-10">
           <Button
             size="sm"
             variant="secondary"
@@ -94,6 +105,28 @@ export const PromptCard = ({
             )}
             {isSaved ? "Saved" : "Save"}
           </Button>
+          {onToggleCompare && (
+            <Button
+              size="sm"
+              variant="secondary"
+              className={`h-8 rounded-full border shadow-lg backdrop-blur-md transition-all px-3 text-xs ${
+                isCompared
+                  ? "bg-emerald-500 text-slate-950 border-emerald-400 font-bold hover:bg-emerald-600"
+                  : "bg-slate-950/75 text-white border-white/10 hover:bg-slate-900"
+              }`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleCompare(prompt);
+              }}
+            >
+              {isCompared ? (
+                <Check className="mr-1.5 h-3.5 w-3.5 text-slate-950" />
+              ) : (
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              {isCompared ? "Compared" : "Compare"}
+            </Button>
+          )}
         </div>
       </div>
 

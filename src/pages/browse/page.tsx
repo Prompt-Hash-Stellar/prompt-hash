@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Filter, Search, X } from "lucide-react";
+import { Filter, Search, X, GitCompare, ChevronUp } from "lucide-react";
 import { featuredPromptTemplates } from "@/data/featuredPrompts";
 import { Navigation } from "@/components/navigation";
 import { Footer } from "@/components/footer";
@@ -10,6 +10,7 @@ import { MarketplaceFilters } from "@/components/MarketplaceFilters";
 import FetchAllPrompts from "./FetchAllPrompts";
 import { HeroAnimation } from "./HeroAnimation";
 import { usePageMeta } from "@/lib/seo/usePageMeta";
+import { PromptComparisonView, usePromptComparison } from "./PromptComparisonView";
 
 const categories = Array.from(
   new Set(featuredPromptTemplates.map((prompt) => prompt.category)),
@@ -22,12 +23,20 @@ export default function BrowsePage() {
     description: "Explore AI prompts across categories. Buy verified prompt licenses secured on the Stellar blockchain.",
   });
 
-  const [priceRange, setPriceRange] = useState([0, 25]);
+  const [priceRange, setPriceRange] = useState<[number, number]>([0, 25]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
   const [selectedTag, setSelectedTag] = useState("");
   const [sortBy, setSortBy] = useState("recent");
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [isCompareDrawerOpen, setIsCompareDrawerOpen] = useState(false);
+
+  const {
+    selected,
+    addToComparison,
+    removeFromComparison,
+    clearComparison,
+  } = usePromptComparison();
 
   const activeFilterCount = useMemo(() => {
     let count = 0;
@@ -155,10 +164,129 @@ export default function BrowsePage() {
               priceRange={priceRange}
               searchQuery={searchQuery}
               sortBy={sortBy}
+              comparedIds={selected.map((p) => p.id)}
+              onToggleCompare={(prompt) => {
+                const promptIdStr = prompt.id.toString();
+                if (selected.some((p) => p.id === promptIdStr)) {
+                  removeFromComparison(promptIdStr);
+                } else {
+                  if (selected.length >= 3) {
+                    alert("You can compare up to 3 prompts at a time.");
+                    return;
+                  }
+                  addToComparison({
+                    id: promptIdStr,
+                    title: prompt.title,
+                    creator: prompt.creator,
+                    price: prompt.priceStroops,
+                    category: prompt.category,
+                    tags: prompt.tags,
+                    licenseType: "Standard",
+                    isOwned: false,
+                    preview: prompt.previewText,
+                  });
+                }
+              }}
             />
           </div>
         </div>
       </main>
+
+      {/* Floating Comparison Drawer */}
+      {selected.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 z-50 p-4 bg-[#090d16]/95 border-t border-white/10 backdrop-blur-md shadow-2xl animate-in slide-in-from-bottom duration-300">
+          <div className="mx-auto max-w-7xl flex flex-col md:flex-row items-center justify-between gap-4">
+            
+            {/* Minimized Dock Info */}
+            <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                <GitCompare className="h-5 w-5" />
+              </span>
+              <div>
+                <h3 className="font-semibold text-sm">Compare Prompts</h3>
+                <p className="text-xs text-slate-400">
+                  {selected.length} of 3 prompts selected
+                </p>
+              </div>
+              
+              {/* Selected items tags with remove button */}
+              <div className="flex flex-wrap gap-2 sm:ml-4">
+                {selected.map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center gap-2 rounded-lg bg-white/5 border border-white/10 px-2.5 py-1 text-xs"
+                  >
+                    <span className="truncate max-w-[100px] font-medium text-slate-200">{p.title}</span>
+                    <button
+                      onClick={() => removeFromComparison(p.id)}
+                      className="rounded-full hover:bg-white/10 p-0.5 text-slate-400 hover:text-white transition-colors"
+                      aria-label={`Remove ${p.title} from comparison`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+              <Button
+                variant="ghost"
+                onClick={clearComparison}
+                className="text-slate-400 hover:text-white text-xs h-10 px-4"
+              >
+                Clear all
+              </Button>
+              <Button
+                onClick={() => setIsCompareDrawerOpen(true)}
+                className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold h-10 px-6 rounded-xl text-sm shadow-lg shadow-emerald-500/10 flex items-center gap-2 w-full md:w-auto justify-center"
+              >
+                Compare Now
+                <ChevronUp className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Expanded Sheet Modal */}
+      {isCompareDrawerOpen && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="relative w-full max-w-7xl bg-[#0b0f19] border-t border-white/10 rounded-t-[32px] p-6 shadow-2xl overflow-y-auto max-h-[85vh] md:max-h-[80vh] flex flex-col animate-in slide-in-from-bottom duration-300">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-white/5 mb-6">
+              <div className="flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                  <GitCompare className="h-4 w-4" />
+                </span>
+                <h2 className="text-xl font-bold text-white">Compare Prompts</h2>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsCompareDrawerOpen(false)}
+                className="text-slate-400 hover:text-white rounded-full h-9 w-9 bg-white/5 hover:bg-white/10"
+                aria-label="Close comparison panel"
+              >
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto pr-1">
+              <PromptComparisonView
+                selected={selected}
+                onRemove={removeFromComparison}
+                onClear={() => {
+                  clearComparison();
+                  setIsCompareDrawerOpen(false);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile Filter Drawer */}
       {isFilterOpen && (
