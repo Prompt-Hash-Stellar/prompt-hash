@@ -9,7 +9,7 @@ let hasWarnedMock = false;
 const warnMockUse = () => {
   if (hasWarnedMock) return;
   console.warn(
-    "⚠️ USING MOCK PromptHashClient: Contract calls are currently stubbed and will not hit the Stellar network.",
+    "âš ï¸ USING MOCK PromptHashClient: Contract calls are currently stubbed and will not hit the Stellar network.",
   );
   hasWarnedMock = true;
 };
@@ -42,7 +42,23 @@ export interface PromptRecord {
   wrappedKey?: string;
 }
 
-export interface RevenueSplitInput {`n  recipient: string;`n  bps: number;`n}`n`nexport interface CreatePromptInput {`n  imageUrl: string;`n  title: string;`n  category: string;`n  previewText: string;`n  encryptedPrompt: string;`n  encryptionIv: string;`n  wrappedKey: string;`n  contentHash: string;`n  priceStroops: bigint;`n  splits?: RevenueSplitInput[];`n}`n
+export interface RevenueSplitInput {
+  recipient: string;
+  bps: number;
+}
+
+export interface CreatePromptInput {
+  imageUrl: string;
+  title: string;
+  category: string;
+  previewText: string;
+  encryptedPrompt: string;
+  encryptionIv: string;
+  wrappedKey: string;
+  contentHash: string;
+  priceStroops: bigint;
+  splits?: RevenueSplitInput[];
+}
 
 export class PromptHashClient {
   /**
@@ -136,12 +152,18 @@ export class PromptHashClient {
     ];
   }
 
-  static async getPromptsByBuyer(_config: PromptHashConfig, _address: string): Promise<PromptRecord[]> {
+  static async getPromptsByBuyer(
+    _config: PromptHashConfig,
+    _address: string,
+  ): Promise<PromptRecord[]> {
     warnMockUse();
     return [];
   }
 
-  static async getPromptsByCreator(_config: PromptHashConfig, _address: string): Promise<PromptRecord[]> {
+  static async getPromptsByCreator(
+    _config: PromptHashConfig,
+    _address: string,
+  ): Promise<PromptRecord[]> {
     warnMockUse();
     return [];
   }
