@@ -7,6 +7,15 @@ import { recordAuditEvent } from "../../server/src/services/auditTrail";
 import { apiError, ErrorCode, type ApiErrorResponse } from "../../src/lib/api/errorCodes";
 import { isPlaceholder } from "../../src/lib/validation/envValidator";
 
+type ExtendedRequest = VercelRequest & {
+  logger: {
+    info: (meta: any, msg: string) => void;
+    warn: (meta: any, msg: string) => void;
+    error: (msg: string) => void;
+  };
+  requestId?: string | null;
+};
+
 /* eslint-disable no-unused-vars */
 export interface ChallengeRequest {
   address: string;
@@ -34,7 +43,7 @@ export interface ChallengeResponse {
 })();
 
 async function handler(
-  req: VercelRequest,
+  req: ExtendedRequest, // Fixed: Changed from VercelRequest to ExtendedRequest
   res: VercelResponse,
 ): Promise<void> {
   if (req.method !== "POST") {
