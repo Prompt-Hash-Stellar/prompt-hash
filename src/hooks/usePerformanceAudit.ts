@@ -40,7 +40,7 @@ export function usePerformanceAudit({
       stopRef.current?.(metadata);
       stopRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
   }, [scope, autoStart]);
 
   const markDone = useCallback(

@@ -82,7 +82,7 @@ describe("unlock challenge verification", () => {
     const address = Keypair.random().publicKey();
     const challenge = createChallengeToken(SECRET, address, "1", ISSUED_AT);
     const [encodedPayload, sig] = challenge.token.split(".");
-    const tampered = encodedPayload.slice(0, -1) + (encodedPayload.at(-1) === "a" ? "b" : "a");
+    const tampered = encodedPayload.slice(0, -1) + (encodedPayload[encodedPayload.length - 1] === "a" ? "b" : "a");
 
     expect(() =>
       verifyChallengeToken(SECRET, `${tampered}.${sig}`, address, "1", WITHIN_TTL),

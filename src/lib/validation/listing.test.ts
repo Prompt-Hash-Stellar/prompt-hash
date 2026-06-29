@@ -15,6 +15,7 @@ const validForm = {
   previewText: "Public preview text for buyers browsing the marketplace.",
   fullPrompt: "Private prompt body with enough content for validation.",
   priceXlm: "2.5",
+  coCreators: []
 };
 
 describe("validateListingForm", () => {
@@ -59,6 +60,7 @@ describe("buildListingChecklistItems", () => {
       previewText: "",
       fullPrompt: "",
       priceXlm: "",
+      coCreators: []
     });
 
     const failures = items.filter((item) => item.status === "fail");

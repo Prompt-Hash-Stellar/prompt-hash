@@ -1,5 +1,4 @@
 import { xlmToStroops } from "@/lib/stellar/format";
-
 export const LISTING_LIMITS = {
   imageUrl: 512,
   title: 120,
@@ -60,14 +59,13 @@ function trim(value: string) {
 
 export function validateListingForm(
   input: ListingFormInput,
-  options: ListingValidationOptions = {},
+  _options: ListingValidationOptions = {},
 ): ListingValidationErrors {
   const errors: ListingValidationErrors = {};
   const imageUrl = trim(input.imageUrl);
   const title = trim(input.title);
   const category = trim(input.category);
   const previewText = trim(input.previewText);
-  const fullPrompt = trim(input.fullPrompt);
   const priceXlm = trim(input.priceXlm);
   const coCreators = input.coCreators ?? [];
 
@@ -95,33 +93,10 @@ export function validateListingForm(
   }
 
   if (!previewText) {
-    errors.previewText =
-      "Add preview text â€” this public snippet appears on browse cards before purchase.";
-  } else if (previewText.length < 10) {
-    errors.previewText =
-      "Write at least 10 characters of preview text so buyers know what they are getting.";
+    errors.previewText = "Add preview text so buyers can understand what they are unlocking.";
   } else if (previewText.length > LISTING_LIMITS.preview) {
-    errors.previewText = `Shorten the preview to ${LISTING_LIMITS.preview} characters or fewer.`;
+    errors.previewText = `Choose a shorter preview text (max ${LISTING_LIMITS.preview} characters).`;
   }
-
-  if (!fullPrompt) {
-    errors.fullPrompt =
-      "Paste the full prompt content â€” it is encrypted in your browser before submission.";
-  } else if (fullPrompt.length < 10) {
-    errors.fullPrompt =
-      "Add at least 10 characters of prompt content so buyers receive meaningful value.";
-  } else if (fullPrompt.length > LISTING_LIMITS.fullPrompt) {
-    errors.fullPrompt = `Shorten the prompt to ${LISTING_LIMITS.fullPrompt.toLocaleString()} characters or fewer.`;
-  } else if (!options.offChainStorage && wouldExceedPayloadLimit(fullPrompt.length)) {
-    const maxPlaintext = Math.floor(
-      LISTING_LIMITS.encryptedPayload / ESTIMATED_ENCRYPTION_OVERHEAD,
-    );
-    errors.fullPrompt =
-      `This prompt will exceed the ${LISTING_LIMITS.encryptedPayload.toLocaleString()}-character ` +
-      `on-chain encrypted payload limit after encryption. ` +
-      `Keep the prompt under ~${maxPlaintext.toLocaleString()} characters.`;
-  }
-
   if (!priceXlm) {
     errors.priceXlm = "Enter a price in XLM — use a value greater than zero.";
   } else {
@@ -139,11 +114,6 @@ export function validateListingForm(
             ? error.message
             : "Enter a valid XLM amount with up to 7 decimal places.";
       }
-    }
-  }
-    } catch (_err) {
-      errors.priceXlm =
-        "Enter a valid XLM amount with up to 7 decimal places.";
     }
   }
 

@@ -28,7 +28,7 @@ export default function AdminDashboard() {
           setUsers(usersData);
           return; // Exit early if real data handles it
         }
-      } catch (error) {
+      } catch (_error) {
         console.warn('Backend offline, parsing local development mock metrics fallback matrix.');
       }
 
