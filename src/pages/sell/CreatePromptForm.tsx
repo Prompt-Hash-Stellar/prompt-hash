@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertCircle, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Eye, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   ListingQualityChecklist,
   buildChecklistItems,
@@ -40,6 +40,7 @@ import {
   validateListingForm,
   validateEncryptedPayload,
 } from "@/lib/validation/listing";
+import { MarkdownContent } from "@/components/MarkdownContent";
 
 const limits = {
   ...LISTING_LIMITS,
@@ -56,6 +57,7 @@ interface FormData {
   title: string;
   category: string;
   previewText: string;
+  description: string;
   fullPrompt: string;
   priceXlm: string;
   coCreators: RevenueSplitFormInput[];
@@ -72,6 +74,7 @@ const createEmptyFormData = (): FormData => ({
   title: "",
   category: "",
   previewText: "",
+  description: "",
   fullPrompt: "",
   priceXlm: "2",
   coCreators: [],
@@ -98,6 +101,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(true);
   const [isFirstListing, setIsFirstListing] = useState(true);
+  const [descriptionTab, setDescriptionTab] = useState<"write" | "preview">("write");
 
   const isConfigured = useMemo(
     () =>
@@ -545,6 +549,58 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
             </p>
           ) : null}
         </div>
+      </div>
+
+      {/* Description with Markdown editor + preview (#330) */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label htmlFor="description" className="text-sm font-medium">
+            Description <span className="text-slate-500 font-normal">(Markdown supported)</span>
+          </label>
+          <div className="flex gap-1 rounded-lg border border-white/10 p-0.5 bg-slate-900/60">
+            <button
+              type="button"
+              onClick={() => setDescriptionTab("write")}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                descriptionTab === "write"
+                  ? "bg-slate-700 text-white"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Pencil className="h-3 w-3" /> Write
+            </button>
+            <button
+              type="button"
+              onClick={() => setDescriptionTab("preview")}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                descriptionTab === "preview"
+                  ? "bg-slate-700 text-white"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Eye className="h-3 w-3" /> Preview
+            </button>
+          </div>
+        </div>
+        {descriptionTab === "write" ? (
+          <Textarea
+            id="description"
+            name="description"
+            value={formData.description}
+            onChange={handleChange}
+            placeholder="Describe your prompt in detail. **Bold**, *italics*, `code`, and lists all work."
+            rows={6}
+          />
+        ) : (
+          <div className="min-h-[144px] rounded-md border border-white/10 bg-slate-900/40 p-3">
+            {formData.description ? (
+              <MarkdownContent>{formData.description}</MarkdownContent>
+            ) : (
+              <p className="text-sm text-slate-500 italic">Nothing to preview yet — write some Markdown first.</p>
+            )}
+          </div>
+        )}
+        <p className="text-xs text-slate-400">{formData.description.length} / 4000 characters</p>
       </div>
 
       <PricingGuidance currentPriceXlm={formData.priceXlm} />

@@ -22,6 +22,7 @@ import { formatPriceLabel } from "@/lib/stellar/format";
 import { copyToClipboard } from "@/lib/clipboard/secureClipboard";
 import { usePageMeta } from "@/lib/seo/usePageMeta";
 import { PromptRevisionHistory } from "@/components/analytics/PromptRevisionHistory";
+import { MarkdownContent } from "@/components/MarkdownContent";
 
 const FALLBACK_IMAGE = "/images/codeguru.png";
 
@@ -171,6 +172,11 @@ export default function PromptDetailPage() {
                 <p className="mt-2 text-sm leading-6 text-slate-400">
                   {prompt.previewText}
                 </p>
+                {prompt.description && (
+                  <div className="mt-4">
+                    <MarkdownContent>{prompt.description}</MarkdownContent>
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-slate-400">

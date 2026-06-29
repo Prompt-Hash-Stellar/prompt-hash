@@ -8,6 +8,7 @@ import { openai } from "@ai-sdk/openai";
 import {
   validateListingMetadata,
 } from "../services/listingValidation";
+import { cacheGet, cacheSet, cacheDel, cacheDelPattern, CACHE_KEYS } from "../services/cacheService";
 
 const API_BASE_URL = "https://secret-ai-gateway.onrender.com";
 
@@ -123,6 +124,9 @@ export const CreatePrompt = async (
 
     await newPrompt.save();
 
+    // Bust every listing cache variant since a new prompt was created
+    await cacheDelPattern("prompts:list:*");
+
     // Populate the owner details in the response
     const populatedPrompt = await newPrompt.populate(
       "owner",
@@ -152,6 +156,11 @@ export const GetPrompts = async (
     const category = searchParams.get("category");
     const walletAddress = searchParams.get("walletAddress");
 
+    // Build a deterministic cache key from the query params
+    const cacheKey = CACHE_KEYS.promptList(`cat=${category ?? ""}&wallet=${walletAddress ?? ""}`);
+    const cached = await cacheGet(cacheKey);
+    if (cached) return res.json(JSON.parse(cached));
+
     const query: any = { listingStatus: 'published', isActive: true };
 
     if (category) {
@@ -170,6 +179,8 @@ export const GetPrompts = async (
     const prompts = await Prompt.find(query)
       .populate("owner", "username walletAddress")
       .sort({ createdAt: -1 });
+
+    await cacheSet(cacheKey, JSON.stringify(prompts), 60);
 
     return res.json(prompts);
   } catch (error) {
@@ -651,6 +662,11 @@ export const PublishPrompt = async (
       return res.status(404).json({ error: "Prompt not found." });
     }
 
+    await Promise.all([
+      cacheDelPattern("prompts:list:*"),
+      cacheDel(CACHE_KEYS.promptDetail(id)),
+    ]);
+
     return res.json({ success: true, prompt });
   } catch (err) {
     console.error("Publish prompt error:", err);
@@ -677,6 +693,11 @@ export const ArchivePrompt = async (
     if (!prompt) {
       return res.status(404).json({ error: "Prompt not found." });
     }
+
+    await Promise.all([
+      cacheDelPattern("prompts:list:*"),
+      cacheDel(CACHE_KEYS.promptDetail(id)),
+    ]);
 
     return res.json({ success: true, prompt });
   } catch (err) {
