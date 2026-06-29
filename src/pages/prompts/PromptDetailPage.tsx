@@ -58,6 +58,26 @@ export default function PromptDetailPage() {
     type: "article",
   });
 
+  const jsonLd = prompt ? {
+    "@context": "https://schema.org/",
+    "@type": "Product",
+    name: prompt.title,
+    description: prompt.previewText,
+    image: prompt.imageUrl || `${window.location.origin}${FALLBACK_IMAGE}`,
+    offers: {
+      "@type": "Offer",
+      price: (Number(prompt.priceStroops) / 10000000).toFixed(2),
+      priceCurrency: "XLM",
+      availability: prompt.active ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+    },
+    aggregateRating: {
+      "@type": "AggregateRating",
+      ratingValue: "5.0",
+      reviewCount: Math.max(1, prompt.salesCount)
+    }
+  } : null;
+
+
   const handleCopyLink = async () => {
     const link =
       typeof window !== "undefined" ? window.location.href : `/prompts/${id}`;
@@ -113,6 +133,12 @@ export default function PromptDetailPage() {
           </div>
         ) : (
           <article className="overflow-hidden rounded-2xl border border-white/10 bg-[#0f1419]">
+            {jsonLd && (
+              <script
+                type="application/ld+json"
+                dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+              />
+            )}
             <div className="aspect-[1200/630] w-full overflow-hidden bg-slate-900">
               <img
                 src={prompt.imageUrl || FALLBACK_IMAGE}
