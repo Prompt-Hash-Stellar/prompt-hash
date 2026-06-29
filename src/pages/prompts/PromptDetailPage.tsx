@@ -23,6 +23,7 @@ import { copyToClipboard } from "@/lib/clipboard/secureClipboard";
 import { usePageMeta } from "@/lib/seo/usePageMeta";
 import { PromptRevisionHistory } from "@/components/analytics/PromptRevisionHistory";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { UserAvatar } from "@/components/UserAvatar";
 
 const FALLBACK_IMAGE = "/images/codeguru.png";
 
@@ -206,8 +207,8 @@ export default function PromptDetailPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-slate-400">
-                <span className="inline-flex items-center gap-1.5">
-                  <User className="h-3.5 w-3.5" />
+                <span className="inline-flex items-center gap-2">
+                  <UserAvatar address={prompt.creator} size={20} />
                   <span className="font-mono text-slate-300">
                     {prompt.creator.length > 12
                       ? `${prompt.creator.slice(0, 6)}…${prompt.creator.slice(-4)}`

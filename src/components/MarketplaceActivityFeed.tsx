@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Zap, PackagePlus, RefreshCw, ShoppingBag, Clock } from "lucide-react";
 import { getRecentPurchases } from "@/lib/stellar/promptHashClient";
 import { browserStellarConfig } from "@/lib/stellar/browserConfig";
+import { UserAvatar } from "@/components/UserAvatar";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,12 +118,15 @@ function ActivityRow({ item }: { item: ActivityItem }) {
   const cfg = typeConfig[item.type];
   return (
     <li className="flex items-start gap-3 py-3 border-b border-white/5 last:border-0">
-      {/* Icon badge */}
-      <div
-        className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${cfg.border} ${cfg.bg} ${cfg.color}`}
-        aria-hidden
-      >
-        {cfg.icon}
+      {/* Icon badge or Avatar */}
+      <div className="mt-0.5 relative shrink-0">
+        <UserAvatar address={item.actor} size={28} />
+        <div
+          className={`absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-[#020617] ${cfg.bg} ${cfg.color}`}
+          aria-hidden
+        >
+          {cfg.icon}
+        </div>
       </div>
 
       {/* Content */}
