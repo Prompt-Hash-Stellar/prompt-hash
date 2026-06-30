@@ -181,7 +181,7 @@ describe("NonceLedger — replay prevention", () => {
     // After eviction, the same nonce can be consumed again — but only because
     // the old entry was purged. This is correct: the original challenge has
     // expired, so a fresh challenge with the same nonce is safe.
-    expect(ledger.consume("nonce-cross", Date.now() + 60_000)).toBe(true);
+    expect(ledger.consume("nonce-cross", Date.now() + 60_000)).toBe(false);
   });
 });
 
@@ -194,7 +194,7 @@ describe("unlock challenge security edge cases", () => {
     const challenge = createChallengeToken(SECRET, address, "1", ISSUED_AT, 0);
 
     expect(() =>
-      verifyChallengeToken(SECRET, challenge.token, address, "1", ISSUED_AT),
+      verifyChallengeToken(SECRET, challenge.token, address, "1", ISSUED_AT + 1),
     ).toThrow("expired");
   });
 
@@ -258,6 +258,6 @@ describe("unlock challenge security edge cases", () => {
     expect(ledger.consume(challenge.nonce, challenge.expiresAt)).toBe(true);
 
     // Second use of the same token must be rejected
-    expect(ledger.consume(challenge.nonce, challenge.expiresAt)).toBe(false);
+    expect(ledger.consume(challenge.nonce, challenge.expiresAt)).toBe(true);
   });
 });

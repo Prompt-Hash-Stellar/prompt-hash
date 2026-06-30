@@ -4,6 +4,7 @@ export const LISTING_LIMITS = {
   title: 120,
   category: 40,
   preview: 280,
+  previewMin: 10,
   fullPrompt: 50_000,
   encryptedPayload: 4096,
   wrappedKey: 256,
@@ -66,6 +67,7 @@ export function validateListingForm(
   const title = trim(input.title);
   const category = trim(input.category);
   const previewText = trim(input.previewText);
+  const fullPrompt = trim(input.fullPrompt);
   const priceXlm = trim(input.priceXlm);
   const coCreators = input.coCreators ?? [];
 
@@ -94,8 +96,17 @@ export function validateListingForm(
 
   if (!previewText) {
     errors.previewText = "Add preview text so buyers can understand what they are unlocking.";
+  } else if (previewText.length < LISTING_LIMITS.previewMin) {
+    errors.previewText = `Use at least ${LISTING_LIMITS.previewMin} characters for the preview.`;
   } else if (previewText.length > LISTING_LIMITS.preview) {
     errors.previewText = `Choose a shorter preview text (max ${LISTING_LIMITS.preview} characters).`;
+  }
+
+  if (!fullPrompt) {
+    errors.fullPrompt = "Add the full prompt content that buyers will unlock.";
+  } else if (wouldExceedPayloadLimit(fullPrompt.length, _options)) {
+    errors.fullPrompt =
+      `Prompt is too long and would exceed the on-chain encrypted payload limit. Shorten it or enable off-chain storage.`;
   }
   if (!priceXlm) {
     errors.priceXlm = "Enter a price in XLM — use a value greater than zero.";
@@ -185,8 +196,11 @@ export function estimateEncryptedSize(plaintextLength: number): number {
   return Math.ceil(plaintextLength * ESTIMATED_ENCRYPTION_OVERHEAD);
 }
 
-export function wouldExceedPayloadLimit(plaintextLength: number): boolean {
-  return estimateEncryptedSize(plaintextLength) > LISTING_LIMITS.encryptedPayload;
+export function wouldExceedPayloadLimit(
+  plaintextLength: number,
+  options: ListingValidationOptions = {},
+): boolean {
+  return !options.offChainStorage && estimateEncryptedSize(plaintextLength) > LISTING_LIMITS.encryptedPayload;
 }
 
 export function validateEncryptedPayload(
