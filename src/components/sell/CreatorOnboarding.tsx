@@ -165,7 +165,7 @@ export function CreatorOnboarding({
         setExpandedSteps(new Set([firstIncomplete.id]));
       }
     }
-  }, [walletAddress]);
+  }, [walletAddress, completedStepIds]);
 
   const handleDismiss = () => {
     persistDismiss(walletAddress);

@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+import { applyThemeBeforeRender } from "./hooks/useTheme";
 import App from "./App.tsx";
 import "@stellar/design-system/build/styles.min.css";
 import * as Sentry from "@sentry/react";
@@ -35,6 +36,9 @@ if (import.meta.env.PUBLIC_SENTRY_DSN) {
     ],
   });
 }
+
+// Apply the saved theme before first paint to prevent light-theme flash.
+applyThemeBeforeRender();
 
 // Initialize the client
 const queryClient = new QueryClient({

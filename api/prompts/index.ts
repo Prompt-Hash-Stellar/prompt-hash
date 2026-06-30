@@ -27,9 +27,11 @@ async function handler(req: any, res: any) {
       const user = await User.findOne({
         walletAddress: String(walletAddress).toLowerCase(),
       });
-      if (user) {
-        query.owner = user._id;
+      if (!user) {
+        res.status(200).json([]);
+        return;
       }
+      query.owner = user._id;
     }
 
     const prompts = await Prompt.find(query)
@@ -39,9 +41,7 @@ async function handler(req: any, res: any) {
     res.status(200).json(prompts);
   } catch (error) {
     console.error("Fetch prompts error:", error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : "Failed to fetch prompts",
-    });
+    res.status(500).json({ error: "Failed to fetch prompts" });
   }
 }
 
