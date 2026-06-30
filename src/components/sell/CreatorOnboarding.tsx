@@ -165,7 +165,6 @@ export function CreatorOnboarding({
         setExpandedSteps(new Set([firstIncomplete.id]));
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddress]);
 
   const handleDismiss = () => {
@@ -181,7 +180,7 @@ export function CreatorOnboarding({
   const toggleStep = (id: string) => {
     setExpandedSteps((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
       return next;
     });
   };

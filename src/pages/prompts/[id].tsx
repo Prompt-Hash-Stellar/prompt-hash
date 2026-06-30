@@ -91,7 +91,7 @@ export default function PromptPreviewPage() {
 
   const [showPurchaseModal, setShowPurchaseModal] = useState(false);
 
-  const handlePurchase = (_promptId: string) => {
+  const handlePurchase = (_: string) => {
     // Open the purchase modal that handles the flow (mocked).
     setShowPurchaseModal(true);
   };

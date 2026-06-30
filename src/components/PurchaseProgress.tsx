@@ -130,7 +130,6 @@ export default function PurchaseProgress({ onClose = () => {}, onViewUnlocked = 
   useEffect(() => {
     // start automatically when mounted
     startFlow();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const StepIcon: React.FC<{ stepId: string }> = ({ stepId }) => {

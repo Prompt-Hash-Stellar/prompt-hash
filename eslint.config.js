@@ -34,7 +34,7 @@ export default tseslint.config(
     },
     rules: {
       // Turn all rules to warnings instead of errors
-      "no-unused-vars": "warn",
+      "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
       "@typescript-eslint/no-unused-vars": "warn",
       "@typescript-eslint/require-await": "off",
       // Or disable specific annoying rules
@@ -42,6 +42,7 @@ export default tseslint.config(
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/no-floating-promises": "off",
       "@typescript-eslint/no-misused-promises": "off",
+      "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
       "@typescript-eslint/no-non-null-asserted-optional-chain": "warn",
       "react-x/no-missing-key": "off",
       "@typescript-eslint/no-unsafe-assignment": "off",

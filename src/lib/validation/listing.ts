@@ -141,11 +141,6 @@ export function validateListingForm(
       }
     }
   }
-    } catch (_err) {
-      errors.priceXlm =
-        "Enter a valid XLM amount with up to 7 decimal places.";
-    }
-  }
 
   if (coCreators.length > LISTING_LIMITS.maxCoCreators) {
     errors.coCreators =
