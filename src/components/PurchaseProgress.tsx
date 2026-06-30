@@ -282,11 +282,20 @@ export default function PurchaseProgress({
         className="relative w-full max-w-2xl sm:mx-4 sm:rounded-lg sm:shadow-xl bg-slate-900 text-slate-100 transform transition-all ease-in-out duration-200 sm:my-8 sm:max-h-[86vh] overflow-hidden"
         style={{ margin: "auto" }}
       >
+        {/* Accessible text zone that announces state updates to screen readers */}
+        <div aria-live="polite" className="sr-only">
+          Current status: {state.message}
+        </div>
+
         <div className="h-1 bg-gray-800">
           <div
             className="h-1 bg-gradient-to-r from-indigo-500 to-emerald-400 transition-all"
             style={{ width: `${progressPercent}%` }}
-            aria-hidden
+            role="progressbar"
+            aria-valuenow={progressPercent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Purchase processing progress"
           />
         </div>
 
