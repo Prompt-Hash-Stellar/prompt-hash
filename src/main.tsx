@@ -35,11 +35,17 @@ if (import.meta.env.PUBLIC_SENTRY_DSN) {
   });
 }
 
-// Initialize the client
+// Initialize the client with performance-tuned defaults.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      retry: false,
+      staleTime: 5 * 60 * 1000,
+      gcTime: 10 * 60 * 1000,
+    },
+    mutations: {
       retry: false,
     },
   },

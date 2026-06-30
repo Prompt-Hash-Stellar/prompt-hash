@@ -1,3 +1,5 @@
+import { memo } from "react";
+import { memo } from "react";
 import { Link, NavLink } from "react-router-dom";
 import NetworkSwitcher from "./NetworkSwitcher";
 import {
@@ -32,7 +34,7 @@ const linkClasses = ({ isActive }: { isActive: boolean }) =>
       : "text-slate-300 hover:bg-white/5 hover:text-white",
   ].join(" ");
 
-export function Navigation() {
+export const Navigation = memo(function Navigation() {
   return (
     <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/85 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
@@ -99,4 +101,6 @@ export function Navigation() {
       </div>
     </header>
   );
-}
+});
+
+Navigation.displayName = "Navigation";
