@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Keep npm dependencies up to date for the frontend
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+
+  # Keep Cargo dependencies up to date for Soroban contracts
+  - package-ecosystem: "cargo"
+    directory: "/contracts/prompt-hash"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      cargo-all:
+        patterns:
+          - "*"
