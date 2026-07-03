@@ -1,6 +1,8 @@
 import { lazy, Suspense } from "react";
 import { Outlet, Route, Routes, Navigate } from "react-router-dom";
 import Home from "./pages/Home";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 
 // Code Splitting / Lazy Loading Router Configurations
 const BrowsePage = lazy(() => import("./pages/browse/page.tsx"));
@@ -40,6 +42,10 @@ const AppLayout = () => (
 );
 
 function App() {
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+
+  useKeyboardShortcuts({ onShowShortcuts: () => setShowShortcutsModal(true) });
+
   return (
     <Suspense
       fallback={

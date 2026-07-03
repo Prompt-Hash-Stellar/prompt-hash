@@ -1,8 +1,10 @@
 import { ChangeEvent, useState } from "react";
-import { AlertCircle, CheckCircle2, Loader2, Save } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, Save, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { uploadImageToIpfs, isIpfsUploadConfigured } from "@/lib/ipfs/upload";
+import { saveProfileAvatarUrl } from "@/lib/profile/profileStorage";
 
 export interface CreatorProfileData {
   displayName: string;
@@ -108,6 +110,9 @@ export function CreatorProfileSettings({
       } else {
         await new Promise((r) => setTimeout(r, 600));
         localStorage.setItem(STORAGE_KEY(walletAddress), JSON.stringify(form));
+        if (form.avatarUrl) {
+          saveProfileAvatarUrl(walletAddress, form.avatarUrl);
+        }
       }
       setSaved(true);
     } catch (err) {
@@ -225,17 +230,42 @@ export function CreatorProfileSettings({
 
         <div className="space-y-1.5">
           <label htmlFor="avatarUrl" className="text-sm font-medium text-slate-200">
-            Avatar URL
+            Avatar
           </label>
-          <Input
-            id="avatarUrl"
-            name="avatarUrl"
-            type="url"
-            value={form.avatarUrl}
-            onChange={handleChange}
-            placeholder="https://example.com/avatar.png"
-            className={errors.avatarUrl ? "border-red-500" : ""}
-          />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            {form.avatarUrl && (
+              <img src={form.avatarUrl} alt="Avatar Preview" className="h-12 w-12 rounded-full object-cover border border-white/20" />
+            )}
+            <Input
+              id="avatarFile"
+              type="file"
+              accept="image/*"
+              className="flex-1"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                try {
+                  if (!isIpfsUploadConfigured()) {
+                    setSaveError("IPFS is not configured. Please set PUBLIC_PINATA_JWT.");
+                    return;
+                  }
+                  setSaving(true);
+                  const result = await uploadImageToIpfs(file);
+                  const gatewayUrl = `https://gateway.pinata.cloud/ipfs/${result.cid}`;
+                  setForm((prev) => ({ ...prev, avatarUrl: gatewayUrl }));
+                  setErrors((prev) => {
+                    const next = { ...prev };
+                    delete next["avatarUrl"];
+                    return next;
+                  });
+                } catch (err) {
+                  setSaveError(err instanceof Error ? err.message : "Failed to upload image");
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+          </div>
           {errors.avatarUrl && (
             <p className="flex items-center gap-1 text-xs text-red-400">
               <AlertCircle className="h-3.5 w-3.5" />
