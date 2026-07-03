@@ -507,3 +507,21 @@ npm run lint && npm run typecheck
 - `docs: rewrite repository for Drip Wave submission`
 - `docs: add architecture and ecosystem overview`
 - `chore: align package metadata with PromptHash Stellar`
+
+## Dependency Updates
+
+Dependencies are managed automatically via [Dependabot](https://docs.github.com/en/code-security/dependabot) (see `.github/dependabot.yml`).
+
+Dependabot opens pull requests every Monday for:
+
+- **npm** (`/`) — frontend packages (Vite, React, Tailwind, etc.)
+- **Cargo** (`/contracts/prompt-hash`) — Soroban / Rust crates, grouped into a single PR
+
+### Reviewing and merging updates
+
+1. Check the Dependabot PR description for the changelog and any breaking-change notes.
+2. Run `npm ci && npm run build` locally (or let CI run) to confirm the frontend still compiles.
+3. For Cargo updates, run `cargo test` inside `contracts/prompt-hash/` before merging.
+4. Merge the PR; Dependabot will rebase any remaining open PRs automatically.
+
+If a Dependabot PR introduces a breaking change, close it and pin the old version in `package.json` or `Cargo.toml` until the issue is resolved upstream.
