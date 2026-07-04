@@ -434,12 +434,14 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
-            <label htmlFor="imageUrl" className="text-sm font-medium">
-              Image URL
+            <label htmlFor="imageUrl" className="text-sm font-medium text-slate-100">
+              Image URL <span aria-hidden="true" className="text-red-400">*</span>
             </label>
             <Input
               id="imageUrl"
               name="imageUrl"
+              required
+              aria-required="true"
               value={formData.imageUrl}
               onChange={handleChange}
               type="url"
@@ -455,12 +457,14 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
             ) : null}
           </div>
           <div className="space-y-2">
-            <label htmlFor="title" className="text-sm font-medium">
-              Title
+            <label htmlFor="title" className="text-sm font-medium text-slate-100">
+              Title <span aria-hidden="true" className="text-red-400">*</span>
             </label>
             <Input
               id="title"
               name="title"
+              required
+              aria-required="true"
               value={formData.title}
               onChange={handleChange}
               autoComplete="off"
@@ -481,12 +485,14 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
         <div className="grid gap-6 md:grid-cols-[1fr_220px]">
           <div className="space-y-2">
-            <label htmlFor="previewText" className="text-sm font-medium">
-              Preview text
+            <label htmlFor="previewText" className="text-sm font-medium text-slate-100">
+              Preview text <span aria-hidden="true" className="text-red-400">*</span>
             </label>
             <Textarea
               id="previewText"
               name="previewText"
+              required
+              aria-required="true"
               value={formData.previewText}
               onChange={handleChange}
               placeholder="This public preview is visible on browse cards and modals."
@@ -504,8 +510,8 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
             ) : null}
           </div>
           <div className="space-y-2">
-            <label htmlFor="category" className="text-sm font-medium">
-              Category
+            <label htmlFor="category" className="text-sm font-medium text-slate-100">
+              Category <span aria-hidden="true" className="text-red-400">*</span>
             </label>
             <Select
               value={formData.category}
@@ -513,6 +519,8 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
             >
               <SelectTrigger
                 id="category"
+                aria-required="true"
+                aria-label="Prompt category"
                 className={errors.category ? "border-red-500" : ""}
               >
                 <SelectValue placeholder="Select category" />
@@ -532,12 +540,14 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
               </p>
             ) : null}
 
-            <label htmlFor="priceXlm" className="pt-3 text-sm font-medium">
-              Price in XLM
+            <label htmlFor="priceXlm" className="pt-3 text-sm font-medium text-slate-100">
+              Price in XLM <span aria-hidden="true" className="text-red-400">*</span>
             </label>
             <Input
               id="priceXlm"
               name="priceXlm"
+              required
+              aria-required="true"
               value={formData.priceXlm}
               onChange={handleChange}
               inputMode="decimal"
@@ -557,7 +567,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
         {/* Description with Markdown editor + preview (#330) */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label htmlFor="description" className="text-sm font-medium">
+            <label htmlFor="description" className="text-sm font-medium text-slate-100">
               Description{" "}
               <span className="text-slate-500 font-normal">
                 (Markdown supported)
@@ -718,12 +728,14 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="fullPrompt" className="text-sm font-medium">
-            Full prompt
+          <label htmlFor="fullPrompt" className="text-sm font-medium text-slate-100">
+            Full prompt <span aria-hidden="true" className="text-red-400">*</span>
           </label>
           <Textarea
             id="fullPrompt"
             name="fullPrompt"
+            required
+            aria-required="true"
             value={formData.fullPrompt}
             onChange={handleChange}
             autoComplete="off"
@@ -773,7 +785,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
       {/* Image URL */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Image URL</label>
+        <label className="text-sm font-medium text-slate-100">Image URL</label>
         <Input
           value={formData.imageUrl}
           onChange={updateField("imageUrl")}
@@ -787,7 +799,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
       {/* Title */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Title</label>
+        <label className="text-sm font-medium text-slate-100">Title</label>
         <Input
           value={formData.title}
           onChange={updateField("title")}
@@ -801,7 +813,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
       {/* Category */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Category</label>
+        <label className="text-sm font-medium text-slate-100">Category</label>
         <Select
           value={formData.category}
           onValueChange={(value) =>
@@ -826,7 +838,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
       {/* Preview Text */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Preview Text</label>
+        <label className="text-sm font-medium text-slate-100">Preview Text</label>
         <Textarea
           value={formData.previewText}
           onChange={updateField("previewText")}
@@ -842,7 +854,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
       {/* Full Description */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <label className="text-sm font-medium">Full Description</label>
+          <label className="text-sm font-medium text-slate-100">Full Description</label>
           <button
             type="button"
             onClick={() =>
@@ -877,7 +889,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
       {/* Full Prompt */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">
+        <label className="text-sm font-medium text-slate-100">
           Full Prompt{" "}
           <span className="text-xs text-slate-400">
             (encrypted before submission)
@@ -897,7 +909,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
       {/* Price */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Price (XLM)</label>
+        <label className="text-sm font-medium text-slate-100">Price (XLM)</label>
         <Input
           value={formData.priceXlm}
           onChange={updateField("priceXlm")}
@@ -917,7 +929,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
       {/* Co-creators */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <label className="text-sm font-medium">Co-creators (optional)</label>
+          <label className="text-sm font-medium text-slate-100">Co-creators (optional)</label>
           <Button
             variant="ghost"
             size="sm"
@@ -987,7 +999,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
 
       {/* Tags */}
       <div className="space-y-2">
-        <label className="text-sm font-medium">Tags</label>
+        <label className="text-sm font-medium text-slate-100">Tags</label>
         <TagInput
           value={formData.tags}
           onChange={(tags) =>
