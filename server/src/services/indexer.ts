@@ -1,11 +1,12 @@
-import { SorobanRpc, scValToNative } from "@stellar/stellar-sdk";
+import { scValToNative } from "@stellar/stellar-sdk";
+import { Server } from "@stellar/stellar-sdk/rpc";
 import Prompt from "../models/Prompt";
 import User from "../models/User";
 import { IndexerState } from "../models/IndexerState";
 import { scanForSimilarity } from "./similarityDetection";
 
 const CONTRACT_ID = process.env.PUBLIC_PROMPT_HASH_CONTRACT_ID;
-const rpc = new SorobanRpc.Server(process.env.PUBLIC_STELLAR_RPC_URL!);
+const rpc = new Server(process.env.PUBLIC_STELLAR_RPC_URL!);
 
 /**
  * Main entry point to start the background indexing process.
@@ -52,7 +53,7 @@ export async function startIndexer() {
 /**
  * Decodes and routes Soroban events to the appropriate database action.
  */
-async function processEvent(event: SorobanRpc.Api.EventResponse) {
+async function processEvent(event: any) {
   // Decode the topic and value from XDR to Native JS types
   const topic = scValToNative(event.topic[0]);
   const data = scValToNative(event.value);

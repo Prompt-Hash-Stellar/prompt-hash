@@ -2,6 +2,7 @@ import { CheckCircle2, AlertCircle, XCircle, Info } from "lucide-react";
 import {
   buildListingChecklistItems,
   type ListingChecklistItem,
+  type ListingFormInput,
   type ListingValidationOptions,
 } from "@/lib/validation/listing";
 
@@ -86,14 +87,7 @@ export function ListingQualityChecklist({ items }: ListingQualityChecklistProps)
 }
 
 export function buildChecklistItems(
-  formData: {
-    imageUrl: string;
-    title: string;
-    category: string;
-    previewText: string;
-    fullPrompt: string;
-    priceXlm: string;
-  },
+  formData: Omit<ListingFormInput, "coCreators"> & Partial<Pick<ListingFormInput, "coCreators">>,
   options?: ListingValidationOptions,
 ): ChecklistItem[] {
   return buildListingChecklistItems({ 

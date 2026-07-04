@@ -8,6 +8,8 @@ const defaultProps = {
   tags: ["popular", "new"],
   selectedCategory: "",
   setSelectedCategory: vi.fn(),
+  searchQuery: "",
+  setSearchQuery: vi.fn(),
   selectedTag: "",
   setSelectedTag: vi.fn(),
   priceRange: [0, 25] as [number, number],
@@ -25,7 +27,7 @@ describe("MarketplaceFilters", () => {
 
   it("renders all category badges", () => {
     renderWithProviders(<MarketplaceFilters {...defaultProps} />);
-    expect(screen.getByText("All")).toBeInTheDocument();
+    expect(screen.getAllByText("All")).toHaveLength(2);
     expect(screen.getByText("AI")).toBeInTheDocument();
     expect(screen.getByText("Marketing")).toBeInTheDocument();
     expect(screen.getByText("Code")).toBeInTheDocument();

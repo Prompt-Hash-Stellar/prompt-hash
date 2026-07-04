@@ -13,6 +13,7 @@ import { Navigation } from "@/components/navigation";
 import { Footer } from "@/components/footer";
 import { FeaturedPrompts } from "@/components/featured-prompts";
 import { FeaturedCreators } from "@/components/FeaturedCreators";
+import { MarketplaceActivityFeed } from "@/components/MarketplaceActivityFeed";
 import { Button } from "@/components/ui/button";
 import { MarketplaceAnalyticsCards } from "@/components/analytics/MarketplaceAnalyticsCards";
 import { usePageMeta } from "@/lib/seo/usePageMeta";

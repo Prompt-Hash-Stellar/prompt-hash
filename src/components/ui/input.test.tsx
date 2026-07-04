@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Input } from "./input";
 import { renderWithProviders } from "@/test/render";
@@ -31,7 +31,7 @@ describe("Input", () => {
     const handleChange = vi.fn();
     renderWithProviders(<Input onChange={handleChange} />);
     const input = screen.getByRole("textbox");
-    input.focus();
+    fireEvent.change(input, { target: { value: "hello" } });
     expect(handleChange).toHaveBeenCalled();
   });
 

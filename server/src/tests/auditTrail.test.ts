@@ -25,7 +25,7 @@ jest.mock("../models/AuditLog", () => {
 });
 
 import { AuditLog } from "../models/AuditLog";
-import { recordAuditEvent, queryAuditEvents } from "../services/auditTrail";
+import { hashWalletAddress, recordAuditEvent, queryAuditEvents } from "../services/auditTrail";
 
 const mockCreate = AuditLog.create as jest.MockedFunction<typeof AuditLog.create>;
 const mockFind = AuditLog.find as jest.MockedFunction<typeof AuditLog.find>;
@@ -62,7 +62,7 @@ describe("recordAuditEvent", () => {
       action: "challenge_issued",
       result: "success",
       promptId: "42",
-      walletAddress: "gabcde", // lowercased
+      walletAddress: hashWalletAddress("GABCDE"),
       requestId: "req-001",
       clientIp: "127.0.0.1",
       reason: null,
@@ -243,7 +243,7 @@ describe("queryAuditEvents", () => {
     const results = await queryAuditEvents({ walletAddress: "GABCDE" });
 
     expect(mockFind).toHaveBeenCalledWith(
-      expect.objectContaining({ walletAddress: "gabcde" }),
+      expect.objectContaining({ walletAddress: hashWalletAddress("GABCDE") }),
     );
     expect(results).toEqual([fakeRecord]);
   });

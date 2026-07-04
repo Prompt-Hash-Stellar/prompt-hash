@@ -115,6 +115,10 @@ describe("create listing integration coverage", () => {
       { target: { value: "Public preview for the integration test listing." } }
     );
     fireEvent.change(
+      screen.getByLabelText(/description/i),
+      { target: { value: "Detailed description for this integration test listing." } }
+    );
+    fireEvent.change(
       screen.getByLabelText(/full prompt/i),
       { target: { value: "Private prompt body that will be encrypted before submission." } }
     );
@@ -122,9 +126,9 @@ describe("create listing integration coverage", () => {
     const priceInput = screen.getByLabelText(/price in xlm/i);
     fireEvent.change(priceInput, { target: { value: "3.75" } });
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /create prompt listing/i }),
-    );
+    const submitButton = screen.getByRole("button", { name: /create prompt listing/i });
+    await waitFor(() => expect(submitButton).not.toBeDisabled());
+    await userEvent.click(submitButton);
 
     await waitFor(() => {
       expect(encryptPromptPlaintextMock).toHaveBeenCalledWith(

@@ -16,25 +16,54 @@ export const LISTING_LIMITS = {
 } as const;
 
 export const createPromptSchema = z.object({
+  imageUrl: z
+    .string()
+    .url("Use a valid image URL")
+    .max(LISTING_LIMITS.imageUrl, `Image URL cannot exceed ${LISTING_LIMITS.imageUrl} characters`),
   title: z
     .string()
     .min(3, "Title must be at least 3 characters")
-    .max(50, "Title cannot exceed 50 characters")
+    .max(LISTING_LIMITS.title, `Title cannot exceed ${LISTING_LIMITS.title} characters`)
     .nonempty("Title is required"),
+  category: z
+    .string()
+    .min(1, "Category is required")
+    .max(LISTING_LIMITS.category, `Category cannot exceed ${LISTING_LIMITS.category} characters`),
+  previewText: z
+    .string()
+    .min(LISTING_LIMITS.previewMin, `Preview text must be at least ${LISTING_LIMITS.previewMin} characters`)
+    .max(LISTING_LIMITS.preview, `Preview text cannot exceed ${LISTING_LIMITS.preview} characters`),
   description: z
     .string()
     .min(10, "Description must be at least 10 characters")
+    .max(4_000, "Description cannot exceed 4000 characters")
     .nonempty("Description is required"),
-  content: z
+  fullPrompt: z
     .string()
     .min(5, "Prompt instructions/content are required")
-    .nonempty("Content is required"),
-  price: z
-    .coerce // Automatically converts string input values to numbers
-    .number()
-    .positive("Price must be a positive number")
-    .min(0.00001, "Price must be greater than 0 XLM")
-    .max(100000, "Price exceeds maximum allowable XLM limit"),
+    .max(LISTING_LIMITS.fullPrompt, `Full prompt cannot exceed ${LISTING_LIMITS.fullPrompt} characters`)
+    .nonempty("Full prompt is required"),
+  priceXlm: z
+    .string()
+    .min(1, "Price is required")
+    .refine((value) => !/e/i.test(value), "Enter a valid XLM amount without scientific notation")
+    .refine((value) => {
+      try {
+        return xlmToStroops(value) > 0n;
+      } catch {
+        return false;
+      }
+    }, "Enter a valid XLM amount greater than 0"),
+  tags: z.array(z.string()).default([]).optional(),
+  coCreators: z
+    .array(
+      z.object({
+        address: z.string(),
+        sharePercent: z.string(),
+      }),
+    )
+    .default([])
+    .optional(),
 });
 
 export type CreatePromptInput = z.infer<typeof createPromptSchema>;
@@ -50,8 +79,10 @@ export type ListingFormInput = {
   title: string;
   category: string;
   previewText: string;
+  description?: string;
   fullPrompt: string;
   priceXlm: string;
+  tags?: string[];
   coCreators: RevenueSplitFormInput[];
 };
 

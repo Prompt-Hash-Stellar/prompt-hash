@@ -173,11 +173,61 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
     }
   }, [draftStorageKey, setValue]);
 
-  const onSubmit = async (data: any) => {
+  const onSubmit = async (data: FormData) => {
     setSubmitError(null);
     setSuccessMessage(null);
-    console.log("Form submitted successfully:", data);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    if (!address || !signTransaction) {
+      setSubmitError("Connect your wallet before creating a listing.");
+      return;
+    }
+
+    if (!browserStellarConfig.promptHashContractId || !unlockPublicKey) {
+      setSubmitError("Contract ID and unlock public key must be configured before listing.");
+      return;
+    }
+
+    try {
+      const encrypted = await encryptPromptPlaintext(data.fullPrompt);
+      const wrappedKey = await wrapPromptKey(encrypted.keyBytes, unlockPublicKey);
+      const splits = (data.coCreators ?? [])
+        .filter((coCreator) => coCreator.address.trim() && coCreator.sharePercent.trim())
+        .map((coCreator) => ({
+          recipient: coCreator.address.trim(),
+          bps: Math.round(Number(coCreator.sharePercent) * 100),
+        }));
+
+      const result = await createPrompt(
+        browserStellarConfig,
+        { signTransaction },
+        address,
+        {
+          imageUrl: data.imageUrl,
+          title: data.title,
+          category: data.category,
+          previewText: data.previewText,
+          encryptedPrompt: encrypted.encryptedPrompt,
+          encryptionIv: encrypted.encryptionIv,
+          wrappedKey,
+          contentHash: encrypted.contentHash,
+          priceStroops: xlmToStroops(data.priceXlm),
+          splits,
+        },
+      );
+
+      if (draftStorageKey) {
+        window.localStorage.removeItem(draftStorageKey);
+      }
+
+      setSuccessMessage(`Prompt #${result.promptId.toString()} created successfully.`);
+      onCreated?.();
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : "Failed to create prompt listing.",
+      );
+    }
   };
 
   return (
@@ -303,6 +353,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
               id="priceXlm"
               type="number"
               inputMode="decimal"
+              step="any"
               placeholder="2.5"
               className={errors.priceXlm ? "border-red-500" : ""}
               {...register("priceXlm")}
