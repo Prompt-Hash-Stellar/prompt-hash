@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import wasm from "vite-plugin-wasm";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
+import { securityHeadersPlugin } from "./scripts/vite-security-headers.mjs";
 import path from "path";
 
 // https://vite.dev/config/
@@ -39,6 +40,7 @@ export default defineConfig(() => {
       },
     }),
     wasm(),
+    securityHeadersPlugin(),
   ];
 
   // 2. ONLY dynamic require/inject Sentry if an auth token is physically available in the environment (e.g., inside CI)

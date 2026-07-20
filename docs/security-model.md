@@ -53,4 +53,87 @@ fn has_access(env: Env, user: Address, prompt_id: u128) -> Result<bool, Error> {
 ```
 This ensures that ONLY the original creator or a verified buyer can ever trigger the unlock flow successfully.
 
-// Starting on the issue
+---
+
+## Frontend Security Headers
+
+The frontend ships with baseline browser security headers to reduce XSS, clickjacking, and data leakage risks.
+
+### Headers (Production via Vercel)
+
+| Header | Value | Purpose |
+|--------|-------|---------|
+| `Content-Security-Policy` | See policy below | Restricts resource loading to trusted origins |
+| `X-Frame-Options` | `DENY` | Prevents clickjacking via iframe embedding |
+| `X-Content-Type-Options` | `nosniff` | Prevents MIME-type sniffing |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | Limits referrer leakage |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), interest-cohort=()` | Disables unnecessary browser features |
+| `X-XSS-Protection` | `0` | Disables legacy XSS filter (CSP is the modern mitigation) |
+| `Strict-Transport-Security` | `max-age=63072000; includeSubDomains; preload` | Forces HTTPS for 2 years |
+
+### Content-Security-Policy (Production)
+
+```
+default-src 'self';
+script-src 'self';
+style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+img-src 'self' data: blob: https://gateway.pinata.cloud https://*.sentry.io;
+font-src 'self' https://fonts.gstatic.com;
+connect-src 'self' https://soroban-*.stellar.org https://soroban-rpc.mainnet.stellar.org
+             https://horizon-*.stellar.org https://horizon.stellar.org
+             https://rpc-futurenet.stellar.org
+             https://friendbot*.stellar.org https://friendbot.stellar.org
+             https://gateway.pinata.cloud https://api.pinata.cloud
+             https://*.sentry.io https://secret-ai-gateway.onrender.com
+             wss://*.sentry.io;
+frame-ancestors 'none';
+base-uri 'self';
+form-action 'self';
+object-src 'none';
+worker-src 'none';
+upgrade-insecure-requests
+```
+
+#### Allowed Origins Explained
+
+| Directive | Origins | Why |
+|-----------|---------|-----|
+| `connect-src` | `soroban-*.stellar.org`, `soroban-rpc.mainnet.stellar.org` | Stellar RPC endpoints (testnet/futurenet via wildcard, mainnet explicit) |
+| `connect-src` | `horizon-*.stellar.org`, `horizon.stellar.org` | Horizon API endpoints (testnet/futurenet via wildcard, mainnet explicit) |
+| `connect-src` | `rpc-futurenet.stellar.org` | Futurenet Soroban RPC (different subdomain pattern than testnet) |
+| `connect-src` | `friendbot*.stellar.org`, `friendbot.stellar.org` | Stellar testnet/friendbot faucet |
+| `connect-src` | `gateway.pinata.cloud`, `api.pinata.cloud` | IPFS upload (Pinata) and ciphertext retrieval |
+| `connect-src` | `*.sentry.io`, `wss://*.sentry.io` | Error monitoring and session replay |
+| `connect-src` | `secret-ai-gateway.onrender.com` | Chat/AI API backend |
+| `img-src` | `gateway.pinata.cloud` | IPFS-hosted prompt images and avatars |
+| `style-src` | `fonts.googleapis.com` | Google Fonts CSS (Inter, Inconsolata) |
+| `font-src` | `fonts.gstatic.com` | Google Fonts font files |
+
+#### `unsafe-inline` Justification
+
+- **`style-src 'unsafe-inline'`**: Required because React and Radix UI inject styles at runtime via `element.style` and `CSSStyleSheet.insertRule()`. CSP nonces do not cover these patterns. This is standard for React SPAs.
+- **`script-src`**: No `'unsafe-inline'` is used in production. All scripts are external module files served with hashes by Vite. The dev CSP adds `'unsafe-eval'` for Vite HMR and `'unsafe-inline'` for dev tooling.
+
+#### Development vs Production Differences
+
+The Vite dev server injects a more permissive CSP via `scripts/vite-security-headers.mjs`:
+
+- Adds `'unsafe-eval'` and `'unsafe-inline'` to `script-src` (required by Vite HMR)
+- Adds `ws:` and `wss:` to `connect-src` (Vite WebSocket for HMR)
+- Adds `http://localhost:5173` and `http://localhost:5000` (dev server and API proxy)
+- Adds `blob:` to `worker-src` (service worker support in dev)
+
+Production headers are served exclusively through `vercel.json` and additionally include:
+
+- `upgrade-insecure-requests` (auto-upgrades HTTP to HTTPS)
+- No `'unsafe-eval'` or `'unsafe-inline'` in `script-src`
+
+### Updating the Policy
+
+When adding a new external service:
+
+1. Identify which CSP directive the service falls under (connect-src for API calls, img-src for images, etc.)
+2. Add the service's origin to `vercel.json` headers and `scripts/vite-security-headers.mjs`
+3. Run `vitest run src/test/security-headers.test.ts` to verify the test still passes
+4. Update this document's policy table
+5. Test the affected flow in browser devtools (Network and Console tabs)
