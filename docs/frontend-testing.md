@@ -14,6 +14,18 @@ Watch mode:
 yarn test:frontend:watch
 ```
 
+Run the deterministic browser-level buyer journey:
+
+```bash
+corepack yarn playwright install chromium # first run only
+yarn test:e2e
+```
+
+The Playwright suite starts Vite locally and uses the `?e2e=1` development-only
+wallet adapter. It mocks challenge, signing, purchase, unlock, and network
+boundaries, so it never requires an extension, testnet RPC, or real funds. The
+adapter is excluded from production behavior through Vite's `DEV` guard.
+
 ## What To Cover
 
 Prefer real user journeys at the component or page-flow level:

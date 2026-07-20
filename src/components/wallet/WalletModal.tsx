@@ -49,6 +49,13 @@ const WALLET_OPTIONS: WalletOption[] = [
   },
 ];
 
+const E2E_WALLET: WalletOption = {
+  id: "e2e-mock",
+  name: "E2E Mock Wallet",
+  icon: "🧪",
+  description: "Deterministic local wallet for browser tests",
+};
+
 interface WalletModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -60,6 +67,12 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const options =
+    import.meta.env.DEV &&
+    new URLSearchParams(window.location.search).get("e2e") === "1"
+      ? [E2E_WALLET, ...WALLET_OPTIONS]
+      : WALLET_OPTIONS;
 
   const handleConnect = async (walletId: string) => {
     setConnectingId(walletId);
@@ -112,7 +125,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
 
         {/* Wallet options */}
         <div className="space-y-2">
-          {WALLET_OPTIONS.map((wallet) => {
+          {options.map((wallet) => {
             const isConnecting = connectingId === wallet.id;
 
             return (
