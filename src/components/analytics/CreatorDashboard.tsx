@@ -8,37 +8,17 @@ import {
   Eye,
   PackageCheck,
   ShoppingBag,
-  TrendingUp,
   Trophy,
 } from "lucide-react";
 import { Skeleton } from "@/components/Skeleton";
 import { Badge } from "@/components/ui/badge";
 import { getAllPrompts, type PromptRecord } from "@/lib/stellar/promptHashClient";
 import { browserStellarConfig } from "@/lib/stellar/browserConfig";
-import { stroopsToXlmString, formatPriceLabel } from "@/lib/stellar/format";
+import { formatPriceLabel } from "@/lib/stellar/format";
 import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-} from "chart.js";
-import { Line } from "react-chartjs-2";
-
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend
-);
-
-const PLATFORM_FEE_RATE = 0.05;
+  calculateCreatorAnalytics,
+  formatEstimatedGrossRevenue,
+} from "@/lib/analytics/creatorAnalytics";
 
 interface MetricCardProps {
   title: string;
@@ -90,161 +70,33 @@ function MetricCard({ title, value, icon, accent = "emerald", description, isLoa
   );
 }
 
-interface SalesChartProps {
-  prompts: PromptRecord[];
-}
-
-function SalesChart({ prompts }: SalesChartProps) {
-  const chartData = useMemo(() => {
-    // Generate mock daily sales data for the last 30 days
-    const days = 30;
-    const labels: string[] = [];
-    const salesData: number[] = [];
-    const revenueData: number[] = [];
-
-    const now = new Date();
-    
-    for (let i = days - 1; i >= 0; i--) {
-      const date = new Date(now);
-      date.setDate(date.getDate() - i);
-      labels.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-      
-      // Generate mock sales based on prompt data
-      const daySales = prompts.reduce((sum, prompt) => {
-        const randomSales = Math.floor(Math.random() * (prompt.salesCount / days + 1));
-        return sum + randomSales;
-      }, 0);
-      
-      salesData.push(daySales);
-      
-      const dayRevenue = prompts.reduce((sum, prompt) => {
-        const xlm = Number(stroopsToXlmString(prompt.priceStroops));
-        const randomSales = Math.floor(Math.random() * (prompt.salesCount / days + 1));
-        return sum + (xlm * randomSales * (1 - PLATFORM_FEE_RATE));
-      }, 0);
-      
-      revenueData.push(dayRevenue);
-    }
-
-    return {
-      labels,
-      datasets: [
-        {
-          label: 'Sales',
-          data: salesData,
-          borderColor: 'rgb(52, 211, 153)',
-          backgroundColor: 'rgba(52, 211, 153, 0.1)',
-          tension: 0.4,
-          fill: true,
-          yAxisID: 'y',
-        },
-        {
-          label: 'Revenue (XLM)',
-          data: revenueData,
-          borderColor: 'rgb(251, 191, 36)',
-          backgroundColor: 'rgba(251, 191, 36, 0.1)',
-          tension: 0.4,
-          fill: true,
-          yAxisID: 'y1',
-        },
-      ],
-    };
-  }, [prompts]);
-
-  const options = {
-    responsive: true,
-    maintainAspectRatio: false,
-    interaction: {
-      mode: 'index' as const,
-      intersect: false,
-    },
-    plugins: {
-      legend: {
-        position: 'top' as const,
-        labels: {
-          color: 'rgb(148, 163, 184)',
-          font: { size: 11 },
-        },
-      },
-      tooltip: {
-        backgroundColor: 'rgba(15, 23, 42, 0.9)',
-        titleColor: 'rgb(255, 255, 255)',
-        bodyColor: 'rgb(148, 163, 184)',
-        borderColor: 'rgba(255, 255, 255, 0.1)',
-        borderWidth: 1,
-      },
-    },
-    scales: {
-      x: {
-        grid: {
-          color: 'rgba(255, 255, 255, 0.05)',
-        },
-        ticks: {
-          color: 'rgb(148, 163, 184)',
-          font: { size: 10 },
-          maxTicksLimit: 7,
-        },
-      },
-      y: {
-        type: 'linear' as const,
-        display: true,
-        position: 'left' as const,
-        grid: {
-          color: 'rgba(255, 255, 255, 0.05)',
-        },
-        ticks: {
-          color: 'rgb(52, 211, 153)',
-          font: { size: 10 },
-        },
-      },
-      y1: {
-        type: 'linear' as const,
-        display: true,
-        position: 'right' as const,
-        grid: {
-          drawOnChartArea: false,
-        },
-        ticks: {
-          color: 'rgb(251, 191, 36)',
-          font: { size: 10 },
-        },
-      },
-    },
-  };
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-      <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400 mb-4">
-        Sales Trend (30 Days)
-      </h3>
-      <div className="h-64">
-        <Line data={chartData} options={options} />
-      </div>
-    </div>
-  );
-}
-
 interface TopPromptRowProps {
   rank: number;
   prompt: PromptRecord;
 }
 
 function TopPromptRow({ rank, prompt }: TopPromptRowProps) {
-  const xlm = Number(stroopsToXlmString(prompt.priceStroops));
-  const revenue = (xlm * prompt.salesCount * (1 - PLATFORM_FEE_RATE)).toFixed(2);
+  const revenue = formatEstimatedGrossRevenue(
+    prompt.priceStroops * BigInt(prompt.salesCount),
+  );
 
   return (
-    <div className="flex items-center gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+    <Link
+      to={`/prompts/${prompt.id.toString()}`}
+      className="flex items-center gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 transition-colors hover:bg-white/[0.05]"
+    >
       <span className="w-5 shrink-0 text-center text-sm font-bold text-slate-600">
         {rank}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-white">{prompt.title}</p>
-        <p className="text-xs text-slate-500">{prompt.category}</p>
+        <p className="truncate text-sm font-semibold text-white">
+          {prompt.title || "Untitled prompt"}
+        </p>
+        <p className="text-xs text-slate-500">{prompt.category || "Uncategorized"}</p>
       </div>
       <div className="shrink-0 text-right">
         <p className="text-sm font-semibold text-white">{prompt.salesCount} sales</p>
-        <p className="text-xs text-slate-500">{revenue} XLM net</p>
+        <p className="text-xs text-slate-500">{revenue} gross</p>
       </div>
       <Badge
         className={
@@ -255,7 +107,7 @@ function TopPromptRow({ rank, prompt }: TopPromptRowProps) {
       >
         {prompt.active ? "Active" : "Paused"}
       </Badge>
-    </div>
+    </Link>
   );
 }
 
@@ -287,21 +139,7 @@ export function CreatorDashboard({ walletAddress }: CreatorDashboardProps) {
     [allPrompts, walletAddress],
   );
 
-  const metrics = useMemo(() => {
-    const active = prompts.filter((p) => p.active).length;
-    const totalSales = prompts.reduce((sum, p) => sum + p.salesCount, 0);
-    const grossRevenue = prompts.reduce(
-      (sum, p) => sum + Number(stroopsToXlmString(p.priceStroops)) * p.salesCount,
-      0,
-    );
-    const platformFees = grossRevenue * PLATFORM_FEE_RATE;
-    const netRevenue = grossRevenue - platformFees;
-    const topPrompts = [...prompts]
-      .sort((a, b) => b.salesCount - a.salesCount)
-      .slice(0, 5);
-
-    return { active, totalSales, grossRevenue, platformFees, netRevenue, topPrompts };
-  }, [prompts]);
+  const metrics = useMemo(() => calculateCreatorAnalytics(prompts), [prompts]);
 
   if (isLoading) {
     return (
@@ -359,13 +197,20 @@ export function CreatorDashboard({ walletAddress }: CreatorDashboardProps) {
   return (
     <div className="space-y-6">
       {/* Metric cards */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
         <MetricCard
           title="Active listings"
-          value={metrics.active}
+          value={metrics.activeListings}
           icon={<Activity className="h-4 w-4" />}
           accent="emerald"
-          description={`of ${prompts.length} total`}
+          description="available to buyers"
+        />
+        <MetricCard
+          title="Inactive listings"
+          value={metrics.inactiveListings}
+          icon={<ShoppingBag className="h-4 w-4" />}
+          accent="purple"
+          description="paused or archived"
         />
         <MetricCard
           title="Total sales"
@@ -375,18 +220,11 @@ export function CreatorDashboard({ walletAddress }: CreatorDashboardProps) {
           description="completed purchases"
         />
         <MetricCard
-          title="Net revenue"
-          value={`${metrics.netRevenue.toFixed(2)} XLM`}
+          title="Gross revenue"
+          value={formatEstimatedGrossRevenue(metrics.estimatedGrossRevenueStroops)}
           icon={<Coins className="h-4 w-4" />}
           accent="amber"
-          description={`${(PLATFORM_FEE_RATE * 100).toFixed(0)} % platform fee deducted`}
-        />
-        <MetricCard
-          title="Platform fees"
-          value={`${metrics.platformFees.toFixed(2)} XLM`}
-          icon={<TrendingUp className="h-4 w-4" />}
-          accent="purple"
-          description={`gross ${metrics.grossRevenue.toFixed(2)} XLM`}
+          description="price × on-chain sales"
         />
         <MetricCard
           title="Preview opens"
@@ -396,9 +234,6 @@ export function CreatorDashboard({ walletAddress }: CreatorDashboardProps) {
           description="total preview views"
         />
       </div>
-
-      {/* Sales trend chart */}
-      <SalesChart prompts={prompts} />
 
       {/* Top-performing prompts */}
       {metrics.topPrompts.length > 0 && (
@@ -426,8 +261,13 @@ export function CreatorDashboard({ walletAddress }: CreatorDashboardProps) {
           {prompts.map((prompt) => (
             <div key={prompt.id.toString()} className="flex items-center gap-4 px-4 py-3">
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-white">{prompt.title}</p>
-                <p className="text-xs text-slate-500">{prompt.category}</p>
+                <Link
+                  to={`/prompts/${prompt.id.toString()}`}
+                  className="truncate text-sm font-medium text-white hover:text-emerald-300"
+                >
+                  {prompt.title || "Untitled prompt"}
+                </Link>
+                <p className="text-xs text-slate-500">{prompt.category || "Uncategorized"}</p>
               </div>
               <div className="shrink-0 text-right">
                 <p className="text-sm font-semibold text-white">{formatPriceLabel(prompt.priceStroops)}</p>
