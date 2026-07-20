@@ -24,7 +24,7 @@ import { metrics } from "../../src/lib/observability/metrics";
 import { dispatchEvent } from "../../server/src/services/webhookDispatcher";
 import { recordAuditEvent } from "../../server/src/services/auditTrail";
 import { apiError, ErrorCode } from "../../src/lib/api/errorCodes";
-import { validateUnlockSecrets } from "../../src/lib/validation/envValidator";
+import { getChallengeTokenConfig, getUnlockKeyConfig } from "../../src/lib/config/serverEnv";
 
 export interface UnlockRequest {
   token: string;
@@ -42,37 +42,28 @@ export interface UnlockSuccessResponse {
 
 // Fail-fast module load validation
 try {
-  validateUnlockSecrets();
-} catch (err: any) {
-  console.error(err.message);
+  getChallengeTokenConfig();
+  getUnlockKeyConfig();
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
 }
 
-
 /**
- * Get active secrets for token verification
- * Supports multiple secrets during rotation grace period
+ * Get active secrets for token verification.
+ * Supports multiple secrets during a rotation grace period.
  */
 function getActiveSecrets(primarySecret: string): string[] {
   const secrets = [primarySecret];
-  
-  // Check for previous secret within grace period
-  const previousSecret = process.env.CHALLENGE_TOKEN_SECRET_PREVIOUS;
-  const rotationTimestamp = parseInt(
-    process.env.CHALLENGE_TOKEN_ROTATION_TIMESTAMP || "0",
-    10
-  );
-  const gracePeriodMs = parseInt(
-    process.env.CHALLENGE_TOKEN_GRACE_PERIOD_MS || "300000", // 5 minutes default
-    10
-  );
-  
+
+  const { previousSecret, rotationTimestamp, gracePeriodMs } = getChallengeTokenConfig();
+
   if (previousSecret && rotationTimestamp) {
     const timeSinceRotation = Date.now() - rotationTimestamp;
     if (timeSinceRotation < gracePeriodMs) {
       secrets.push(previousSecret);
     }
   }
-  
+
   return secrets;
 }
 
@@ -103,14 +94,6 @@ async function handler(
   req: VercelRequest,
   res: VercelResponse,
 ): Promise<void> {
-  try {
-    validateUnlockSecrets();
-  } catch (err: any) {
-    console.error("Configuration validation failed", { error: err.message });
-    res.status(500).json(apiError(ErrorCode.CONFIGURATION_ERROR, "Configuration error."));
-    return;
-  }
-
   if (req.method !== "POST") {
     res.status(405).json(apiError(ErrorCode.METHOD_NOT_ALLOWED, "Method not allowed."));
     return;
@@ -176,12 +159,16 @@ async function handler(
     }
   }
 
-  const challengeSecret = process.env.CHALLENGE_TOKEN_SECRET;
-  const unlockPublicKey = process.env.UNLOCK_PUBLIC_KEY;
-  const unlockPrivateKey = process.env.UNLOCK_PRIVATE_KEY;
-
-  if (!challengeSecret || !unlockPublicKey || !unlockPrivateKey) {
-    req.logger.error("Unlock service is missing configuration secrets.");
+  let challengeSecret: string;
+  let unlockPublicKey: string;
+  let unlockPrivateKey: string;
+  try {
+    ({ currentSecret: challengeSecret } = getChallengeTokenConfig());
+    ({ unlockPublicKey, unlockPrivateKey } = getUnlockKeyConfig());
+  } catch (err) {
+    req.logger.error(
+      `Unlock service is missing configuration secrets: ${err instanceof Error ? err.message : String(err)}`,
+    );
     res.status(500).json(apiError(ErrorCode.CONFIGURATION_ERROR, "Configuration error."));
     return;
   }

@@ -7,7 +7,7 @@
  */
 
 import { randomBytes } from "crypto";
-import { isPlaceholder } from "../../src/lib/validation/envValidator";
+import { getChallengeTokenConfig, getAdminRotationToken } from "../../src/lib/config/serverEnv";
 
 interface SecretRotationConfig {
   currentSecret: string;
@@ -46,10 +46,7 @@ export function getActiveSecrets(): string[] {
  * Rotate the secret and update environment
  */
 export function rotateSecret(): SecretRotationConfig {
-  const currentSecret = process.env.CHALLENGE_TOKEN_SECRET;
-  if (!currentSecret || isPlaceholder(currentSecret) || currentSecret.length < 16) {
-    throw new Error("CHALLENGE_TOKEN_SECRET not configured correctly");
-  }
+  const { currentSecret } = getChallengeTokenConfig();
 
   const newSecret = generateNewSecret();
   const newConfig: SecretRotationConfig = {
@@ -69,25 +66,9 @@ export function rotateSecret(): SecretRotationConfig {
  * Get current rotation configuration
  */
 function getRotationConfig(): SecretRotationConfig {
-  // In production, retrieve from secure storage
-  // For now, use environment variables
-  const currentSecret = process.env.CHALLENGE_TOKEN_SECRET || "";
-  const previousSecret = process.env.CHALLENGE_TOKEN_SECRET_PREVIOUS;
-  const rotationTimestamp = parseInt(
-    process.env.CHALLENGE_TOKEN_ROTATION_TIMESTAMP || "0",
-    10
-  );
-  const gracePeriodMs = parseInt(
-    process.env.CHALLENGE_TOKEN_GRACE_PERIOD_MS || String(DEFAULT_GRACE_PERIOD_MS),
-    10
-  );
-
-  return {
-    currentSecret,
-    previousSecret,
-    rotationTimestamp,
-    gracePeriodMs,
-  };
+  // In production, retrieve from secure storage.
+  // For now, use the centralized environment config.
+  return getChallengeTokenConfig();
 }
 
 /**
@@ -148,8 +129,8 @@ export default async function handler(req: any, res: any) {
 
   // Authentication check - only allow authorized operators
   const authHeader = req.headers.authorization;
-  const adminToken = process.env.ADMIN_ROTATION_TOKEN;
-  
+  const adminToken = getAdminRotationToken();
+
   if (!adminToken || authHeader !== `Bearer ${adminToken}`) {
     res.status(401).json({ error: "Unauthorized" });
     return;
