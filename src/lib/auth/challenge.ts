@@ -10,6 +10,8 @@ export interface ChallengePayload {
   nonce: string;
   issuedAt: number;
   expiresAt: number;
+  action?: string;
+  aud?: string;
 }
 
 function base64UrlEncode(value: string) {
@@ -47,6 +49,8 @@ export function createChallengeToken(
     nonce: randomUUID(),
     issuedAt: now,
     expiresAt: now + ttlMs,
+    action: "unlock",
+    aud: "prompt-hash",
   };
 
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
@@ -68,7 +72,16 @@ export function verifyChallengeToken(
   promptId: string,
   now = Date.now(),
 ) {
-  const [encodedPayload, signature] = token.split(".");
+  if (!token || typeof token !== "string") {
+    throw new Error("Malformed challenge token.");
+  }
+
+  const parts = token.split(".");
+  if (parts.length !== 2) {
+    throw new Error("Malformed challenge token.");
+  }
+
+  const [encodedPayload, signature] = parts;
   if (!encodedPayload || !signature) {
     throw new Error("Malformed challenge token.");
   }
@@ -92,13 +105,39 @@ export function verifyChallengeToken(
     throw new Error("Invalid challenge token signature.");
   }
 
-  const payload = JSON.parse(base64UrlDecode(encodedPayload)) as ChallengePayload;
-  if (payload.address !== address || payload.promptId !== promptId) {
-    throw new Error("Challenge token does not match the requested prompt unlock.");
+  let payload: ChallengePayload;
+  try {
+    payload = JSON.parse(base64UrlDecode(encodedPayload)) as ChallengePayload;
+  } catch {
+    throw new Error("Malformed challenge token.");
+  }
+
+  if (
+    !payload ||
+    typeof payload.address !== "string" ||
+    typeof payload.promptId !== "string" ||
+    typeof payload.nonce !== "string" ||
+    typeof payload.issuedAt !== "number" ||
+    typeof payload.expiresAt !== "number"
+  ) {
+    throw new Error("Malformed challenge token.");
+  }
+
+  if (payload.address.toLowerCase() !== address.toLowerCase()) {
+    throw new Error("Challenge token wallet address mismatch.");
+  }
+
+  if (String(payload.promptId) !== String(promptId)) {
+    throw new Error("Challenge token prompt ID mismatch.");
   }
 
   if (payload.expiresAt < now) {
-    throw new Error("Challenge token has expired.");
+    throw new Error("The challenge token has expired. Please request a new one.");
+  }
+
+  // Future timestamp clock skew protection
+  if (payload.issuedAt > now + 5 * 60 * 1000) {
+    throw new Error("Challenge token issued in the future.");
   }
 
   return payload;
@@ -121,11 +160,7 @@ export function verifyChallengeSignature(
  * In-process nonce ledger for tracking consumed challenge nonces.
  * One nonce corresponds to exactly one unlock request; consuming it a second
  * time indicates a replay attack. Entries are evicted once their TTL expires
- * (matching the challenge expiry) so memory stays bounded.
- *
- * Production deployments running multiple server instances should back this
- * with a shared store (Redis); for single-instance deploys and tests the
- * in-memory ledger is sufficient.
+ * so memory stays bounded.
  */
 export class NonceLedger {
   private readonly used = new Map<string, number>();
@@ -153,6 +188,10 @@ export class NonceLedger {
         this.used.delete(nonce);
       }
     }
+  }
+
+  clear(): void {
+    this.used.clear();
   }
 }
 

@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   buildChallengeMessage,
+  globalNonceLedger,
   verifyChallengeSignature,
   verifyChallengeToken,
 } from "../../src/lib/auth/challenge";
@@ -46,7 +47,6 @@ try {
 } catch (err: any) {
   console.error(err.message);
 }
-
 
 /**
  * Get active secrets for token verification
@@ -121,6 +121,8 @@ async function handler(
   );
   const { token, promptId, address, signedMessage }: Partial<UnlockRequest> = req.body ?? {};
 
+  const redactedAddress = address ? String(address).slice(0, 8) + "..." : "unknown";
+
   // Authenticated bucket: wallet address is present.
   const isAuthenticated = Boolean(address);
 
@@ -153,7 +155,7 @@ async function handler(
   if (address) {
     const walletRateLimit = await checkRateLimit("unlock", String(address), isAuthenticated);
     if (!walletRateLimit.success) {
-      req.logger.warn({ address }, "Rate limit exceeded for unlock (Wallet)");
+      req.logger.warn({ address: redactedAddress }, "Rate limit exceeded for unlock (Wallet)");
       metrics.trackRateLimitHit("unlock_wallet", String(address));
       void recordAuditEvent({
         action: "unlock_rate_limited",
@@ -197,24 +199,45 @@ async function handler(
   }
 
   try {
-    // Support multiple active secrets during rotation grace period
+    // 1. Verify challenge token signature & payload parameters
     const activeSecrets = getActiveSecrets(challengeSecret);
-    
     const payload = verifyChallengeToken(
       activeSecrets,
       String(token),
       String(address),
       String(promptId),
     );
+
+    // 2. Prevent challenge token replay via globalNonceLedger
+    const nonceConsumed = globalNonceLedger.consume(payload.nonce, payload.expiresAt);
+    if (!nonceConsumed) {
+      req.logger.warn({ address: redactedAddress, promptId }, "Challenge nonce replay detected");
+      metrics.trackUnlockFailure(String(address), String(promptId), "replay_detected");
+      void recordAuditEvent({
+        action: "unlock_replay_detected",
+        result: "blocked",
+        promptId: String(promptId),
+        walletAddress: String(address),
+        requestId: req.requestId ?? null,
+        clientIp,
+        reason: "nonce_reused",
+      });
+      res.status(400).json(
+        apiError(ErrorCode.TEMPORARY_FAILURE, "This unlock request has already been processed."),
+      );
+      return;
+    }
+
+    // 3. Verify challenge message signature against payload address
     const challengeMessage = buildChallengeMessage(payload);
     const validSignature = verifyChallengeSignature(
-      String(address),
+      payload.address,
       challengeMessage,
       String(signedMessage),
     );
 
     if (!validSignature) {
-      req.logger.warn({ address, promptId }, "Invalid wallet signature");
+      req.logger.warn({ address: redactedAddress, promptId }, "Invalid wallet signature");
       metrics.trackUnlockFailure(String(address), String(promptId), "invalid_signature");
       void recordAuditEvent({
         action: "unlock_invalid_signature",
@@ -229,12 +252,13 @@ async function handler(
       return;
     }
 
+    // 4. Secondary replay protection guard
     const replayCheck = await checkReplayProtection(
       String(token),
       String(signedMessage),
     );
     if (!replayCheck.valid) {
-      req.logger.warn({ address, promptId }, "Replay attack detected");
+      req.logger.warn({ address: redactedAddress, promptId }, "Replay attack detected in store");
       metrics.trackUnlockFailure(String(address), String(promptId), "replay_detected");
       void recordAuditEvent({
         action: "unlock_replay_detected",
@@ -251,11 +275,12 @@ async function handler(
       return;
     }
 
+    // 5. On-chain Soroban access verification
     const config = getServerConfig();
     const id = BigInt(promptId);
     const access = await hasAccess(config, String(address), id);
     if (!access) {
-      req.logger.warn({ address, promptId }, "Prompt access denied");
+      req.logger.warn({ address: redactedAddress, promptId }, "Prompt access denied");
       metrics.trackUnlockFailure(String(address), String(promptId), "no_access");
       void recordAuditEvent({
         action: "unlock_no_access",
@@ -272,6 +297,7 @@ async function handler(
       return;
     }
 
+    // 6. Decrypt plaintext content
     const prompt = await getPrompt(config, id);
     const keyBytes = await unwrapPromptKey(
       prompt.wrappedKey,
@@ -279,9 +305,6 @@ async function handler(
       unlockPrivateKey,
     );
 
-    // Large payloads are stored on IPFS with only an `ipfs://<cid>` reference
-    // kept on-chain — fetch the ciphertext back before decrypting. Inline
-    // payloads (legacy listings) are decrypted directly.
     const ciphertext = isIpfsReference(prompt.encryptedPrompt)
       ? await fetchCiphertextFromIpfs(prompt.encryptedPrompt)
       : prompt.encryptedPrompt;
@@ -294,7 +317,7 @@ async function handler(
     const contentHash = await hashPromptPlaintext(plaintext);
     const storedHash = normalizeContentHash(prompt.contentHash);
     if (contentHash !== storedHash) {
-      req.logger.error({ address, promptId }, "Prompt integrity check failed");
+      req.logger.error({ address: redactedAddress, promptId }, "Prompt integrity check failed");
       metrics.trackUnlockFailure(String(address), String(promptId), "integrity_failure");
       void recordAuditEvent({
         action: "unlock_integrity_failure",
@@ -312,7 +335,7 @@ async function handler(
     }
 
     metrics.trackUnlockSuccess(String(address), String(promptId));
-    req.logger.info({ address, promptId }, "Prompt unlocked successfully");
+    req.logger.info({ address: redactedAddress, promptId }, "Prompt unlocked successfully");
     void recordAuditEvent({
       action: "unlock_success",
       result: "success",
@@ -323,7 +346,7 @@ async function handler(
       reason: null,
     });
 
-    // Fire-and-forget webhook dispatch so the creator is notified of the sale.
+    // Fire-and-forget webhook dispatch
     void Promise.resolve(
       dispatchEvent(prompt.creator ?? "", "PromptPurchased", {
         promptId: prompt.id.toString(),
@@ -341,11 +364,13 @@ async function handler(
     res.status(200).json(successResponse);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to unlock prompt.";
-    req.logger.error({ address, promptId, error: message }, "Unlock attempt failed");
+    req.logger.error({ address: redactedAddress, promptId, error: message }, "Unlock attempt failed");
     metrics.trackUnlockFailure(String(address), String(promptId), "error");
 
-    // Distinguish expired-challenge errors for finer-grained audit reasons and error codes.
     const isExpired = message.toLowerCase().includes("expired");
+    const isMismatch = message.toLowerCase().includes("mismatch");
+    const isInvalidSig = message.toLowerCase().includes("invalid challenge token signature");
+
     void recordAuditEvent({
       action: isExpired ? "unlock_expired_challenge" : "unlock_error",
       result: "failure",
@@ -353,16 +378,20 @@ async function handler(
       walletAddress: address ? String(address) : null,
       requestId: req.requestId ?? null,
       clientIp,
-      reason: isExpired ? "expired_challenge" : "error",
+      reason: isExpired ? "expired_challenge" : isMismatch ? "mismatch" : "error",
     });
 
     if (isExpired) {
-      res.status(400).json(
+      res.status(401).json(
         apiError(ErrorCode.CHALLENGE_EXPIRED, "The challenge token has expired. Please request a new one."),
+      );
+    } else if (isMismatch || isInvalidSig) {
+      res.status(401).json(
+        apiError(ErrorCode.INVALID_SIGNATURE, message),
       );
     } else {
       res.status(400).json(
-        apiError(ErrorCode.TEMPORARY_FAILURE, "Failed to unlock prompt. Please try again."),
+        apiError(ErrorCode.TEMPORARY_FAILURE, message),
       );
     }
   }
