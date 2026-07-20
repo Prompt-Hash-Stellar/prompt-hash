@@ -41,5 +41,28 @@
   },
   "language": {
     "select": "Idioma"
+  },
+  "wallet": {
+    "connect": "Conectar Billetera",
+    "connecting": "Abriendo billetera...",
+    "reconnecting": "Restaurando sesión...",
+    "disconnect": "Desconectar Billetera",
+    "retry_connection": "Reintentar conexión",
+    "dismiss_error": "Descartar error",
+    "modal": {
+      "title": "Conectar Billetera",
+      "subtitle": "Elige una billetera de Stellar para continuar",
+      "close": "Cerrar ventana de billetera",
+      "connection_failed": "Conexión fallida",
+      "new_to_stellar": "¿Nuevo en Stellar?",
+      "learn_about_wallets": "Aprende sobre billeteras",
+      "wallets": {
+        "freighter": "Extensión de navegador de Stellar Development Foundation",
+        "xbull": "Billetera móvil y de navegador para Stellar",
+        "albedo": "Billetera Stellar basada en la web con DEX incorporado",
+        "lobstr": "Billetera móvil y web popular para Stellar",
+        "rabet": "Extensión de navegador para Stellar"
+      }
+    }
   }
 }

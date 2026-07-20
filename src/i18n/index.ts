@@ -39,6 +39,14 @@ i18n
     },
     interpolation: { escapeValue: false },
     react: { useSuspense: false },
+    // Surface missing translation keys loudly during development instead of
+    // silently falling back to the key name in production.
+    saveMissing: import.meta.env.DEV,
+    missingKeyHandler: import.meta.env.DEV
+      ? (langs, _ns, key) => {
+          console.warn(`[i18n] Missing translation key "${key}" for language(s): ${langs.join(', ')}`);
+        }
+      : undefined,
   });
 
 export default i18n;

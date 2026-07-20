@@ -41,5 +41,28 @@
   },
   "language": {
     "select": "语言"
+  },
+  "wallet": {
+    "connect": "连接钱包",
+    "connecting": "正在打开钱包...",
+    "reconnecting": "正在恢复会话...",
+    "disconnect": "断开钱包连接",
+    "retry_connection": "重试连接",
+    "dismiss_error": "关闭错误提示",
+    "modal": {
+      "title": "连接钱包",
+      "subtitle": "选择一个 Stellar 钱包以继续",
+      "close": "关闭钱包窗口",
+      "connection_failed": "连接失败",
+      "new_to_stellar": "初次使用 Stellar？",
+      "learn_about_wallets": "了解钱包详情",
+      "wallets": {
+        "freighter": "由 Stellar Development Foundation 提供的浏览器扩展",
+        "xbull": "适用于 Stellar 的移动端和浏览器钱包",
+        "albedo": "内置去中心化交易所的网页版 Stellar 钱包",
+        "lobstr": "适用于 Stellar 的热门移动端和网页钱包",
+        "rabet": "适用于 Stellar 的浏览器扩展钱包"
+      }
+    }
   }
 }
