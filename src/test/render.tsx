@@ -11,6 +11,9 @@ import {
   type WalletContextType,
 } from "@/providers/WalletProvider";
 import { TransactionProvider } from "@/components/TransactionProvider";
+// Initialize the i18n singleton so components using useTranslation() render
+// real copy in tests instead of raw translation keys.
+import "@/i18n";
 
 const defaultWallet: WalletContextType = {
   address: undefined,

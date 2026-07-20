@@ -41,5 +41,28 @@
   },
   "language": {
     "select": "Langue"
+  },
+  "wallet": {
+    "connect": "Connecter le portefeuille",
+    "connecting": "Ouverture du portefeuille...",
+    "reconnecting": "Restauration de la session...",
+    "disconnect": "Déconnecter le portefeuille",
+    "retry_connection": "Réessayer la connexion",
+    "dismiss_error": "Ignorer l'erreur",
+    "modal": {
+      "title": "Connecter le portefeuille",
+      "subtitle": "Choisissez un portefeuille Stellar pour continuer",
+      "close": "Fermer la fenêtre du portefeuille",
+      "connection_failed": "Échec de la connexion",
+      "new_to_stellar": "Nouveau sur Stellar ?",
+      "learn_about_wallets": "En savoir plus sur les portefeuilles",
+      "wallets": {
+        "freighter": "Extension de navigateur par la Stellar Development Foundation",
+        "xbull": "Portefeuille mobile et navigateur pour Stellar",
+        "albedo": "Portefeuille Stellar basé sur le web avec DEX intégré",
+        "lobstr": "Portefeuille mobile et web populaire pour Stellar",
+        "rabet": "Extension de navigateur pour Stellar"
+      }
+    }
   }
 }

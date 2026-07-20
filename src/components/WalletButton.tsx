@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useWallet } from "../hooks/useWallet";
 import { shortenAddress } from "@/lib/utils";
 import { Button } from "./ui/button";
@@ -6,6 +7,7 @@ import { Loader2, AlertCircle, X, RefreshCw, Wallet } from "lucide-react";
 import { WalletModal } from "./wallet/WalletModal";
 
 export const WalletButton = () => {
+  const { t } = useTranslation();
   const [showModal, setShowModal] = useState(false);
   const [showDisconnectModal, setShowDisconnectModal] = useState(false);
   const { address, status, error, disconnect } = useWallet();
@@ -50,14 +52,14 @@ export const WalletButton = () => {
           <button
             onClick={handleRetry}
             className="opacity-80 hover:opacity-100 transition-opacity ml-1 p-0.5"
-            aria-label="Retry connection"
+            aria-label={t("wallet.retry_connection")}
           >
             <RefreshCw className="w-3 h-3" />
           </button>
           <button
             onClick={() => setDismissedError(error)}
             className="opacity-80 hover:opacity-100 transition-opacity ml-1 p-0.5"
-            aria-label="Dismiss error"
+            aria-label={t("wallet.dismiss_error")}
           >
             <X className="w-3 h-3" />
           </button>
@@ -73,7 +75,7 @@ export const WalletButton = () => {
           onClick={() => setShowModal(true)}
         >
           <Wallet className="w-4 h-4" />
-          Connect Wallet
+          {t("wallet.connect")}
         </Button>
       )}
 
@@ -86,7 +88,7 @@ export const WalletButton = () => {
           className="ml-auto font-bold border-purple-900 text-white min-w-[120px] cursor-not-allowed opacity-70"
         >
           <Loader2 className="mr-2 h-4 w-4 animate-spin shrink-0" />
-          Opening Wallet...
+          {t("wallet.connecting")}
         </Button>
       )}
 
@@ -94,7 +96,7 @@ export const WalletButton = () => {
       {status === "reconnecting" && (
         <div className="ml-auto flex items-center space-x-2 text-sm text-slate-300 min-w-[120px] justify-center">
           <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-          <span>Restoring Session...</span>
+          <span>{t("wallet.reconnecting")}</span>
         </div>
       )}
 
@@ -119,7 +121,7 @@ export const WalletButton = () => {
             onClick={handleDisconnect}
             className="w-full px-4 py-3 text-sm text-red-400 hover:bg-red-500/10 transition-colors text-left"
           >
-            Disconnect Wallet
+            {t("wallet.disconnect")}
           </button>
         </div>
       )}

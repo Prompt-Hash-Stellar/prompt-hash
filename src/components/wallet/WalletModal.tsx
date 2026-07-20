@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2, X, ExternalLink, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWallet } from "@/hooks/useWallet";
@@ -7,44 +8,45 @@ interface WalletOption {
   id: string;
   name: string;
   icon: string;
-  description: string;
+  descriptionKey: string;
   installUrl?: string;
 }
 
+// Wallet names are proper nouns/brand names and are intentionally not translated.
 const WALLET_OPTIONS: WalletOption[] = [
   {
     id: "freighter",
     name: "Freighter",
     icon: "🦊",
-    description: "Browser extension by Stellar Development Foundation",
+    descriptionKey: "wallet.modal.wallets.freighter",
     installUrl: "https://freighter.app",
   },
   {
     id: "xbull",
     name: "xBull",
     icon: "🐂",
-    description: "Mobile and browser wallet for Stellar",
+    descriptionKey: "wallet.modal.wallets.xbull",
     installUrl: "https://xbull.app",
   },
   {
     id: "albedo",
     name: "Albedo",
     icon: "🌌",
-    description: "Web-based Stellar wallet with built-in DEX",
+    descriptionKey: "wallet.modal.wallets.albedo",
     installUrl: "https://albedo.link",
   },
   {
     id: "lobstr",
     name: "Lobstr",
     icon: "🦞",
-    description: "Popular mobile and web wallet for Stellar",
+    descriptionKey: "wallet.modal.wallets.lobstr",
     installUrl: "https://lobstr.co",
   },
   {
     id: "rabet",
     name: "Rabet",
     icon: "🐰",
-    description: "Browser extension wallet for Stellar",
+    descriptionKey: "wallet.modal.wallets.rabet",
     installUrl: "https://rabet.io",
   },
 ];
@@ -55,6 +57,7 @@ interface WalletModalProps {
 }
 
 export function WalletModal({ isOpen, onClose }: WalletModalProps) {
+  const { t } = useTranslation();
   const { connect, status, error } = useWallet();
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -69,7 +72,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
       await connect(walletId);
       onClose();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Connection failed";
+      const message = err instanceof Error ? err.message : t("wallet.modal.connection_failed");
       setConnectionError(message);
     } finally {
       setConnectingId(null);
@@ -88,15 +91,15 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 id="modal-title" className="text-xl font-bold text-white">
-              Connect Wallet
+              {t("wallet.modal.title")}
             </h2>
             <p className="text-sm text-slate-400 mt-1">
-              Choose a Stellar wallet to continue
+              {t("wallet.modal.subtitle")}
             </p>
           </div>
           <button
             onClick={onClose}
-            aria-label="Close wallet modal"
+            aria-label={t("wallet.modal.close")}
             className="text-slate-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-white/10"
           >
             <X className="w-5 h-5" />
@@ -128,7 +131,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     {wallet.name}
                   </div>
                   <div className="text-xs text-slate-400">
-                    {wallet.description}
+                    {t(wallet.descriptionKey)}
                   </div>
                 </div>
                 {isConnecting ? (
@@ -144,14 +147,14 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
         {/* Footer */}
         <div className="mt-6 pt-4 border-t border-white/10">
           <p className="text-xs text-slate-500 text-center">
-            New to Stellar?{" "}
+            {t("wallet.modal.new_to_stellar")}{" "}
             <a
               href="https://stellar.org/learn/keys"
               target="_blank"
               rel="noopener noreferrer"
               className="text-amber-400 hover:text-amber-300 transition-colors"
             >
-              Learn about wallets
+              {t("wallet.modal.learn_about_wallets")}
             </a>
           </p>
         </div>

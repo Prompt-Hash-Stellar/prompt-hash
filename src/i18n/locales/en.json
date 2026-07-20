@@ -41,5 +41,28 @@
   },
   "language": {
     "select": "Language"
+  },
+  "wallet": {
+    "connect": "Connect Wallet",
+    "connecting": "Opening Wallet...",
+    "reconnecting": "Restoring Session...",
+    "disconnect": "Disconnect Wallet",
+    "retry_connection": "Retry connection",
+    "dismiss_error": "Dismiss error",
+    "modal": {
+      "title": "Connect Wallet",
+      "subtitle": "Choose a Stellar wallet to continue",
+      "close": "Close wallet modal",
+      "connection_failed": "Connection failed",
+      "new_to_stellar": "New to Stellar?",
+      "learn_about_wallets": "Learn about wallets",
+      "wallets": {
+        "freighter": "Browser extension by Stellar Development Foundation",
+        "xbull": "Mobile and browser wallet for Stellar",
+        "albedo": "Web-based Stellar wallet with built-in DEX",
+        "lobstr": "Popular mobile and web wallet for Stellar",
+        "rabet": "Browser extension wallet for Stellar"
+      }
+    }
   }
 }
