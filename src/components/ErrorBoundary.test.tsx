@@ -29,13 +29,16 @@ describe("ErrorBoundary", () => {
     expect(screen.getByText("Oops, something went wrong.")).toBeInTheDocument();
   });
 
-  it("displays error message", () => {
+  it("displays a generic message without leaking the internal error text", () => {
     renderWithProviders(
       <ErrorBoundary>
         <ThrowingComponent />
       </ErrorBoundary>
     );
-    expect(screen.getByText("Test error message")).toBeInTheDocument();
+    expect(
+      screen.getByText(/we hit an unexpected error loading this page/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Test error message")).not.toBeInTheDocument();
   });
 
   it("renders reload button", () => {

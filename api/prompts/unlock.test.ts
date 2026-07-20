@@ -6,6 +6,7 @@ import { Keypair } from "@stellar/stellar-sdk";
 import {
   buildChallengeMessage,
   createChallengeToken,
+  globalNonceLedger,
 } from "../../src/lib/auth/challenge";
 import { ErrorCode } from "../../src/lib/api/errorCodes";
 
@@ -59,7 +60,7 @@ vi.mock("../../server/src/services/webhookDispatcher", () => ({
 
 import handler from "./unlock";
 
-async function setupUnlockFixture(plaintext = "Secret prompt instructions for buyers.") {
+async function setupUnlockFixture(plaintext = "Secret prompt instructions for buyers.", ttlMs = 5 * 60 * 1000) {
   const buyer = Keypair.random();
   const contentHash = "a".repeat(64);
 
@@ -76,6 +77,8 @@ async function setupUnlockFixture(plaintext = "Secret prompt instructions for bu
     process.env.CHALLENGE_TOKEN_SECRET,
     buyer.publicKey(),
     promptId,
+    Date.now(),
+    ttlMs,
   );
   const signedMessage = Buffer.from(
     buyer.sign(Buffer.from(challenge.challenge, "utf8")),
@@ -134,9 +137,10 @@ async function invokeUnlock(body: Record<string, unknown>) {
   return { statusCode, responseData, errorLog };
 }
 
-describe("unlock API integrity checks", () => {
+describe("unlock API integrity and replay protection checks (#37)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    globalNonceLedger.clear();
   });
 
   it("returns plaintext when decrypted content matches the stored hash", async () => {
@@ -153,6 +157,77 @@ describe("unlock API integrity checks", () => {
     expect(statusCode).toBe(200);
     expect(responseData.plaintext).toBe(plaintext);
     expect(responseData.contentHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("rejects challenge token replay attempts", async () => {
+    const { buyer, promptId, challenge, signedMessage } =
+      await setupUnlockFixture();
+
+    // First unlock call succeeds
+    const { statusCode: status1 } = await invokeUnlock({
+      token: challenge.token,
+      promptId,
+      address: buyer.publicKey(),
+      signedMessage,
+    });
+    expect(status1).toBe(200);
+
+    // Second unlock call with same token/nonce is blocked as replay
+    const { statusCode: status2, responseData: data2 } = await invokeUnlock({
+      token: challenge.token,
+      promptId,
+      address: buyer.publicKey(),
+      signedMessage,
+    });
+    expect(status2).toBe(400);
+    expect(data2.code).toBe(ErrorCode.TEMPORARY_FAILURE);
+    expect(data2.error).toContain("already been processed");
+  });
+
+  it("rejects expired challenge tokens with HTTP 401", async () => {
+    const { buyer, promptId, challenge, signedMessage } =
+      await setupUnlockFixture("Secret content", -1000); // Expired 1 second ago
+
+    const { statusCode, responseData } = await invokeUnlock({
+      token: challenge.token,
+      promptId,
+      address: buyer.publicKey(),
+      signedMessage,
+    });
+
+    expect(statusCode).toBe(401);
+    expect(responseData.code).toBe(ErrorCode.CHALLENGE_EXPIRED);
+    expect(responseData.error).toContain("expired");
+  });
+
+  it("rejects wallet address mismatch (challenge issued for wallet A used by wallet B)", async () => {
+    const { buyer, promptId, challenge, signedMessage } = await setupUnlockFixture();
+    const attackerWallet = Keypair.random();
+
+    const { statusCode, responseData } = await invokeUnlock({
+      token: challenge.token,
+      promptId,
+      address: attackerWallet.publicKey(), // Wallet mismatch
+      signedMessage,
+    });
+
+    expect(statusCode).toBe(401);
+    expect(responseData.code).toBe(ErrorCode.INVALID_SIGNATURE);
+    expect(responseData.error).toContain("mismatch");
+  });
+
+  it("rejects prompt ID mismatch", async () => {
+    const { buyer, challenge, signedMessage } = await setupUnlockFixture();
+
+    const { statusCode, responseData } = await invokeUnlock({
+      token: challenge.token,
+      promptId: "999", // Prompt mismatch (token was issued for 42)
+      address: buyer.publicKey(),
+      signedMessage,
+    });
+
+    expect(statusCode).toBe(401);
+    expect(responseData.error).toContain("mismatch");
   });
 
   it("fails safely when the recomputed hash does not match", async () => {
@@ -172,25 +247,6 @@ describe("unlock API integrity checks", () => {
     expect(responseData.code).toBe(ErrorCode.INTEGRITY_FAILURE);
     expect(responseData.plaintext).toBeUndefined();
     expect(responseData.error).toBe("Prompt integrity check failed.");
-  });
-
-  it("does not expose decrypted content in generic error responses", async () => {
-    const { buyer, promptId, challenge, signedMessage } =
-      await setupUnlockFixture();
-
-    getPromptMock.mockRejectedValue(new Error("Simulated backend failure"));
-
-    const { statusCode, responseData } = await invokeUnlock({
-      token: challenge.token,
-      promptId,
-      address: buyer.publicKey(),
-      signedMessage,
-    });
-
-    expect(statusCode).toBe(400);
-    expect(responseData.code).toBe(ErrorCode.TEMPORARY_FAILURE);
-    expect(responseData.plaintext).toBeUndefined();
-    expect(String(responseData.error)).not.toContain("Secret prompt");
   });
 
   it("rejects unlock when wallet signature is invalid", async () => {

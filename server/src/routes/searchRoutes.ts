@@ -6,8 +6,22 @@ import {
   getCategoriesWithCounts,
   getFeaturedPrompts,
 } from "../controllers/searchController";
+import { searchPublicPromptIndex } from "../services/promptSearchIndex";
 
 const router = express.Router();
+
+router.get("/indexed", asyncHandler(async (req: Request, res: Response) => {
+  try {
+    const result = await searchPublicPromptIndex({
+      q: req.query.q as string, category: req.query.category as string,
+      tag: req.query.tag as string, creator: req.query.creator as string,
+      cursor: req.query.cursor as string, limit: Number(req.query.limit),
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: String((error as Error).message) });
+  }
+}));
 
 /**
  * GET /api/search/prompts

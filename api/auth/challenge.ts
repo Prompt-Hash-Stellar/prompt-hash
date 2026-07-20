@@ -16,7 +16,6 @@ type ExtendedRequest = VercelRequest & {
   requestId?: string | null;
 };
 
-/* eslint-disable no-unused-vars */
 export interface ChallengeRequest {
   address: string;
   promptId: string;
@@ -42,7 +41,7 @@ export interface ChallengeResponse {
 })();
 
 async function handler(
-  req: ExtendedRequest, // Fixed: Changed from VercelRequest to ExtendedRequest
+  req: ExtendedRequest,
   res: VercelResponse,
 ): Promise<void> {
   if (req.method !== "POST") {
@@ -100,9 +99,7 @@ async function handler(
     return;
   }
 
-  // Issue a strictly time-bound challenge (default TTL = 5 minutes).
-  // The ttlMs parameter is capped at 10 minutes server-side to prevent
-  // unreasonably long-lived tokens.
+  // Issue a strictly time-bound challenge (default TTL = 5 minutes, max 10 minutes).
   const MAX_TTL_MS = 10 * 60 * 1000;
   const ttlMs = Math.min(5 * 60 * 1000, MAX_TTL_MS);
   const challenge = createChallengeToken(secret, String(address), String(promptId), Date.now(), ttlMs);
@@ -116,7 +113,9 @@ async function handler(
   };
 
   metrics.trackChallengeIssued(String(address), String(promptId));
-  req.logger.info({ address, promptId }, "Challenge token issued successfully");
+  // Redact wallet address in log to prevent address harvesting from log aggregators
+  const redactedAddress = String(address).slice(0, 8) + "...";
+  req.logger.info({ address: redactedAddress, promptId: String(promptId) }, "Challenge token issued successfully");
 
   void recordAuditEvent({
     action: "challenge_issued",

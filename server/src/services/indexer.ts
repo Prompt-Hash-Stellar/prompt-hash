@@ -89,6 +89,8 @@ async function processEvent(event: any) {
         { upsert: true, new: true },
       );
 
+      await indexPromptProjection(upserted, creator, Number(event.ledger || 0));
+
       // Run similarity scan asynchronously — never block the indexer loop.
       if (upserted?.content) {
         const combinedText = `${upserted.title ?? ""} ${upserted.content}`;
@@ -123,6 +125,8 @@ async function processEvent(event: any) {
         { onChainId: prompt_id.toString() },
         { $set: { isActive: active } },
       );
+      const indexed = await Prompt.findOne({ onChainId: prompt_id.toString() }).populate("owner").lean();
+      if (indexed) await indexPromptProjection(indexed, indexed.owner?.walletAddress || "unknown", Number(event.ledger || 0));
       break;
     }
 
