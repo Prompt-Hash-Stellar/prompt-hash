@@ -29,7 +29,8 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="flex min-h-screen flex-col items-center justify-center p-4 text-center">
           <h1 className="text-4xl font-bold mb-4">Oops, something went wrong.</h1>
           <p className="text-lg mb-8 opacity-80">
-            {this.state.error?.message || "An unexpected error occurred."}
+            We hit an unexpected error loading this page. Your wallet and funds are
+            unaffected — reloading usually fixes it.
           </p>
           <Button onClick={() => window.location.reload()} size="lg">
             Reload Page
