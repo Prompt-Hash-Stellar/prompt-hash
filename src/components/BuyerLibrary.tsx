@@ -4,14 +4,20 @@ import { RefundRequestModal } from "./RefundRequestModal";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpenCheck,
+  CheckCircle2,
+  Clock,
   Eye,
   FilterX,
+  History,
   Loader2,
   LockKeyhole,
   PlugZap,
   RefreshCw,
+  Search,
+  ShieldAlert,
   ShieldCheck,
   ShoppingBag,
+  Trash2,
   WifiOff,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -30,11 +36,16 @@ import { formatPriceLabel } from "@/lib/stellar/format";
 import { unlockPromptContent } from "@/lib/prompts/unlock";
 import { UnlockExplainer, type UnlockState } from "@/components/UnlockExplainer";
 import { stellarNetwork } from "@/lib/env";
+import {
+  addUnlockHistoryEntry,
+  clearUnlockHistory,
+  filterLibraryPrompts,
+  getUnlockHistory,
+  type SortOption,
+  type StatusFilter,
+} from "@/lib/prompts/librarySearch";
 
 const EXPECTED_NETWORK = stellarNetwork;
-
-type StatusFilter = "all" | "unlocked" | "locked";
-type SortOption = "newest" | "oldest" | "price-high" | "price-low";
 
 const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All statuses" },
@@ -274,9 +285,11 @@ export function BuyerLibrary() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [unlocked, setUnlocked] = useState<Record<string, string>>({});
   const [unlockStates, setUnlockStates] = useState<Record<string, UnlockState>>({});
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showHistoryDrawer, setShowHistoryDrawer] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
 
-  // Filter + sort state is mirrored in the URL so it survives reloads and can be
-  // shared/bookmarked (e.g. /purchases?category=Development&status=locked&sort=oldest).
+  // Filter + sort state is mirrored in the URL
   const [searchParams, setSearchParams] = useSearchParams();
   const categoryFilter = searchParams.get("category") ?? FILTER_DEFAULTS.category;
   const statusFilter = coerceStatus(searchParams.get("status"));
@@ -298,6 +311,7 @@ export function BuyerLibrary() {
   };
 
   const hasActiveFilters =
+    searchQuery.trim().length > 0 ||
     categoryFilter !== FILTER_DEFAULTS.category ||
     statusFilter !== FILTER_DEFAULTS.status ||
     sortOption !== FILTER_DEFAULTS.sort;
@@ -323,40 +337,21 @@ export function BuyerLibrary() {
   );
 
   const visiblePrompts = useMemo(() => {
-    const filtered = prompts.filter((prompt) => {
-      if (categoryFilter !== ALL_CATEGORIES && prompt.category !== categoryFilter) {
-        return false;
-      }
-      if (statusFilter !== "all") {
-        const isUnlocked = Boolean(unlocked[prompt.id.toString()]);
-        if (statusFilter === "unlocked" && !isUnlocked) return false;
-        if (statusFilter === "locked" && isUnlocked) return false;
-      }
-      return true;
-    });
+    return filterLibraryPrompts(
+      prompts,
+      searchQuery,
+      categoryFilter,
+      statusFilter,
+      sortOption,
+      unlocked,
+    );
+  }, [prompts, searchQuery, categoryFilter, statusFilter, sortOption, unlocked]);
 
-    const sorted = [...filtered];
-    switch (sortOption) {
-      case "oldest":
-        sorted.sort((a, b) => Number(a.id - b.id));
-        break;
-      case "price-high":
-        sorted.sort((a, b) =>
-          a.priceStroops > b.priceStroops ? -1 : a.priceStroops < b.priceStroops ? 1 : 0,
-        );
-        break;
-      case "price-low":
-        sorted.sort((a, b) =>
-          a.priceStroops < b.priceStroops ? -1 : a.priceStroops > b.priceStroops ? 1 : 0,
-        );
-        break;
-      case "newest":
-      default:
-        sorted.sort((a, b) => Number(b.id - a.id));
-        break;
-    }
-    return sorted;
-  }, [prompts, categoryFilter, statusFilter, sortOption, unlocked]);
+  const unlockHistory = useMemo(() => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+    historyVersion; // dependency to trigger refresh on history updates
+    return getUnlockHistory(address ?? undefined);
+  }, [address, historyVersion]);
 
   const setUnlockState = (id: string, state: UnlockState) =>
     setUnlockStates((prev) => ({ ...prev, [id]: state }));
@@ -366,21 +361,45 @@ export function BuyerLibrary() {
     const id = prompt.id.toString();
     setBusyId(id);
     setUnlockState(id, "signing");
+
     try {
       const result = await unlockPromptContent(address, id, signMessage);
       setUnlockState(id, "success");
       setUnlocked((prev) => ({ ...prev, [id]: result.plaintext }));
+      addUnlockHistoryEntry(address, {
+        promptId: id,
+        title: prompt.title,
+        status: "success",
+      });
+      setHistoryVersion((v) => v + 1);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "";
+      let statusResult: "rejected" | "expired" | "failed" = "failed";
       if (msg.toLowerCase().includes("declined") || msg.toLowerCase().includes("rejected")) {
+        statusResult = "rejected";
         setUnlockState(id, "rejected");
       } else if (msg.toLowerCase().includes("expired")) {
+        statusResult = "expired";
         setUnlockState(id, "expired");
       } else {
         setUnlockState(id, "failed");
       }
+
+      addUnlockHistoryEntry(address, {
+        promptId: id,
+        title: prompt.title,
+        status: statusResult,
+      });
+      setHistoryVersion((v) => v + 1);
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleClearHistory = () => {
+    if (address) {
+      clearUnlockHistory(address);
+      setHistoryVersion((v) => v + 1);
     }
   };
 
@@ -424,90 +443,170 @@ export function BuyerLibrary() {
 
   return (
     <div className="space-y-5">
-      {/* Filter + sort toolbar */}
-      <div className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:flex-row sm:flex-wrap sm:items-end">
-        <div className="flex-1 space-y-1.5">
-          <label className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
-            Category
-          </label>
-          <Select
-            value={categoryFilter}
-            onValueChange={(value) =>
-              updateFilter("category", value, FILTER_DEFAULTS.category)
-            }
-          >
-            <SelectTrigger className="h-9 w-full">
-              <SelectValue placeholder="All categories" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
-              {categories.map((category) => (
-                <SelectItem key={category} value={category}>
-                  {category}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      {/* Search Bar & Toolbar */}
+      <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center justify-between">
+          {/* Search Input */}
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search library by title, category, or creator..."
+              className="h-9 w-full rounded-md border border-white/10 bg-slate-950/60 pl-9 pr-3 text-xs text-white placeholder:text-slate-500 focus:border-cyan-200/50 focus:outline-none"
+            />
+          </div>
 
-        <div className="flex-1 space-y-1.5">
-          <label className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
-            Status
-          </label>
-          <Select
-            value={statusFilter}
-            onValueChange={(value) =>
-              updateFilter("status", value, FILTER_DEFAULTS.status)
-            }
-          >
-            <SelectTrigger className="h-9 w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STATUS_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex-1 space-y-1.5">
-          <label className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
-            Sort by
-          </label>
-          <Select
-            value={sortOption}
-            onValueChange={(value) =>
-              updateFilter("sort", value, FILTER_DEFAULTS.sort)
-            }
-          >
-            <SelectTrigger className="h-9 w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SORT_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {hasActiveFilters && (
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
-            onClick={() => setSearchParams({}, { replace: true })}
-            className="h-9 shrink-0 border border-white/10 text-slate-300 hover:bg-white/10"
+            onClick={() => setShowHistoryDrawer(!showHistoryDrawer)}
+            className="h-9 gap-1.5 border-white/10 text-slate-300 hover:bg-white/10 text-xs shrink-0"
           >
-            <FilterX className="h-3.5 w-3.5" />
-            Clear
+            <History className="h-3.5 w-3.5" />
+            Unlock History ({unlockHistory.length})
           </Button>
-        )}
+        </div>
+
+        {/* Filter + sort toolbar */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end pt-1">
+          <div className="flex-1 space-y-1.5">
+            <label className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
+              Category
+            </label>
+            <Select
+              value={categoryFilter}
+              onValueChange={(value) =>
+                updateFilter("category", value, FILTER_DEFAULTS.category)
+              }
+            >
+              <SelectTrigger className="h-9 w-full">
+                <SelectValue placeholder="All categories" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
+                {categories.map((category) => (
+                  <SelectItem key={category} value={category}>
+                    {category}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex-1 space-y-1.5">
+            <label className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
+              Status
+            </label>
+            <Select
+              value={statusFilter}
+              onValueChange={(value) =>
+                updateFilter("status", value, FILTER_DEFAULTS.status)
+              }
+            >
+              <SelectTrigger className="h-9 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STATUS_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex-1 space-y-1.5">
+            <label className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
+              Sort by
+            </label>
+            <Select
+              value={sortOption}
+              onValueChange={(value) =>
+                updateFilter("sort", value, FILTER_DEFAULTS.sort)
+              }
+            >
+              <SelectTrigger className="h-9 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SORT_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSearchQuery("");
+                setSearchParams({}, { replace: true });
+              }}
+              className="h-9 shrink-0 border border-white/10 text-slate-300 hover:bg-white/10"
+            >
+              <FilterX className="h-3.5 w-3.5" />
+              Clear
+            </Button>
+          )}
+        </div>
       </div>
+
+      {/* Unlock History Drawer */}
+      {showHistoryDrawer && (
+        <div className="rounded-xl border border-cyan-200/20 bg-slate-950/80 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-cyan-200 flex items-center gap-1.5">
+              <History className="h-4 w-4" /> Local Unlock Telemetry History
+            </h4>
+            {unlockHistory.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearHistory}
+                className="h-7 text-[11px] text-slate-400 hover:text-rose-400 gap-1"
+              >
+                <Trash2 className="h-3 w-3" /> Clear History
+              </Button>
+            )}
+          </div>
+
+          {unlockHistory.length === 0 ? (
+            <p className="text-xs text-slate-500 py-2">No recent unlock attempts recorded for this wallet.</p>
+          ) : (
+            <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+              {unlockHistory.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between text-xs p-2 rounded-lg border border-white/5 bg-white/[0.02]"
+                >
+                  <div className="flex items-center gap-2 truncate">
+                    {item.status === "success" ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                    ) : (
+                      <ShieldAlert className="h-3.5 w-3.5 text-rose-400 shrink-0" />
+                    )}
+                    <span className="text-slate-200 truncate">{item.title}</span>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0 text-slate-500 text-[11px]">
+                    <span className="capitalize">{item.status}</span>
+                    <span className="flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <p className="text-xs text-slate-500">
         Showing {visiblePrompts.length} of {prompts.length}{" "}
@@ -518,20 +617,23 @@ export function BuyerLibrary() {
         <div className="grid min-h-48 place-items-center rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-8 text-center">
           <div className="max-w-xs">
             <h3 className="text-base font-semibold text-white">
-              No prompts match these filters
+              No prompts match search or filters
             </h3>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              Try a different category or status, or clear the filters to see
+              Try a different query, category, or status, or clear the filters to see
               everything in your library.
             </p>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setSearchParams({}, { replace: true })}
+              onClick={() => {
+                setSearchQuery("");
+                setSearchParams({}, { replace: true });
+              }}
               className="mt-4 border border-white/10 text-slate-300 hover:bg-white/10"
             >
               <FilterX className="h-3.5 w-3.5" />
-              Clear filters
+              Clear search & filters
             </Button>
           </div>
         </div>
