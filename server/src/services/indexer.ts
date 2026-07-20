@@ -4,10 +4,10 @@ import Prompt from "../models/Prompt";
 import User from "../models/User";
 import { IndexerState } from "../models/IndexerState";
 import { scanForSimilarity } from "./similarityDetection";
-import { indexPromptProjection } from "./promptSearchIndex";
+import { stellarConfig } from "../config/stellar";
 
-const CONTRACT_ID = process.env.PUBLIC_PROMPT_HASH_CONTRACT_ID;
-const rpc = new Server(process.env.PUBLIC_STELLAR_RPC_URL!);
+const CONTRACT_ID = stellarConfig.PUBLIC_PROMPT_HASH_CONTRACT_ID;
+const rpc = new Server(stellarConfig.PUBLIC_STELLAR_RPC_URL);
 
 /**
  * Main entry point to start the background indexing process.
@@ -33,7 +33,7 @@ export async function startIndexer() {
         filters: [
           {
             type: "contract",
-            contractIds: [CONTRACT_ID!],
+            contractIds: [CONTRACT_ID],
           },
         ],
       });
