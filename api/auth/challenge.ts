@@ -5,7 +5,7 @@ import { checkRateLimit } from "../../src/lib/observability/rateLimiter";
 import { metrics } from "../../src/lib/observability/metrics";
 import { recordAuditEvent } from "../../server/src/services/auditTrail";
 import { apiError, ErrorCode } from "../../src/lib/api/errorCodes";
-import { isPlaceholder } from "../../src/lib/validation/envValidator";
+import { getChallengeTokenConfig } from "../../src/lib/config/serverEnv";
 
 type ExtendedRequest = VercelRequest & {
   logger: {
@@ -32,9 +32,11 @@ export interface ChallengeResponse {
 
 // Fail-fast module-load validation: reject startup if secrets are missing.
 (function validateEnv(): void {
-  const secret = process.env.CHALLENGE_TOKEN_SECRET;
-  if (!secret || isPlaceholder(secret) || secret.length < 16) {
-    console.error("FATAL: CHALLENGE_TOKEN_SECRET is missing, placeholder, or too short (< 16 chars).");
+  try {
+    getChallengeTokenConfig();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`FATAL: ${message}`);
     if (process.env.NODE_ENV === "production") {
       throw new Error("CHALLENGE_TOKEN_SECRET not configured.");
     }
@@ -86,9 +88,13 @@ async function handler(
   res.setHeader("X-RateLimit-Remaining", rateLimit.remaining);
   res.setHeader("X-RateLimit-Reset", rateLimit.reset);
 
-  const secret = process.env.CHALLENGE_TOKEN_SECRET;
-  if (!secret || isPlaceholder(secret) || secret.length < 16) {
-    req.logger.error("CHALLENGE_TOKEN_SECRET is not configured correctly.");
+  let secret: string;
+  try {
+    ({ currentSecret: secret } = getChallengeTokenConfig());
+  } catch (err) {
+    req.logger.error(
+      `CHALLENGE_TOKEN_SECRET is not configured correctly: ${err instanceof Error ? err.message : String(err)}`,
+    );
     res.status(500).json(apiError(ErrorCode.CONFIGURATION_ERROR, "Configuration error."));
     return;
   }
