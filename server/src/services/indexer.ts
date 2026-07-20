@@ -4,6 +4,7 @@ import Prompt from "../models/Prompt";
 import User from "../models/User";
 import { IndexerState } from "../models/IndexerState";
 import { scanForSimilarity } from "./similarityDetection";
+import { indexPromptProjection } from "./promptSearchIndex";
 
 const CONTRACT_ID = process.env.PUBLIC_PROMPT_HASH_CONTRACT_ID;
 const rpc = new Server(process.env.PUBLIC_STELLAR_RPC_URL!);
@@ -88,6 +89,8 @@ async function processEvent(event: any) {
         { upsert: true, new: true },
       );
 
+      await indexPromptProjection(upserted, creator, Number(event.ledger || 0));
+
       // Run similarity scan asynchronously — never block the indexer loop.
       if (upserted?.content) {
         const combinedText = `${upserted.title ?? ""} ${upserted.content}`;
@@ -122,6 +125,8 @@ async function processEvent(event: any) {
         { onChainId: prompt_id.toString() },
         { $set: { isActive: active } },
       );
+      const indexed = await Prompt.findOne({ onChainId: prompt_id.toString() }).populate("owner").lean();
+      if (indexed) await indexPromptProjection(indexed, indexed.owner?.walletAddress || "unknown", Number(event.ledger || 0));
       break;
     }
 
