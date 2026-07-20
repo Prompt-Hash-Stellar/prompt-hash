@@ -1,7 +1,11 @@
+import { useState } from "react";
 import { StarRating } from "./StarRating";
-import { User } from "lucide-react";
+import { User, Flag, CheckCircle2, ShieldAlert } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ReviewClient } from "@/lib/reviews/reviewClient";
+import { useWallet } from "@/hooks/useWallet";
 
-// Simple date formatting utility (replaces date-fns)
+// Simple date formatting utility
 const formatDistanceToNow = (date: Date, options?: { addSuffix?: boolean }) => {
   const now = Date.now();
   const diff = now - date.getTime();
@@ -30,11 +34,13 @@ export interface Review {
   text: string;
   createdAt: number;
   verified: boolean;
+  status?: "visible" | "hidden" | "flagged" | "pending";
 }
 
 interface ReviewListProps {
   reviews: Review[];
   isLoading?: boolean;
+  onReviewReported?: () => void;
 }
 
 const formatAddress = (address: string) => {
@@ -50,7 +56,42 @@ const formatDate = (timestamp: number) => {
   }
 };
 
-export const ReviewList = ({ reviews, isLoading }: ReviewListProps) => {
+export const ReviewList = ({ reviews, isLoading, onReviewReported }: ReviewListProps) => {
+  const { address: currentWallet } = useWallet();
+  const [reportingId, setReportingId] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState<string>("");
+  const [reportSuccessId, setReportSuccessId] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const handleReportSubmit = async (review: Review) => {
+    if (!currentWallet) {
+      setErrorMsg("Please connect your wallet to report a review.");
+      return;
+    }
+    if (reportReason.trim().length < 5) {
+      setErrorMsg("Please provide a reason (at least 5 characters).");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMsg(null);
+
+    try {
+      await ReviewClient.reportReview(review.id, review.promptId, currentWallet, reportReason);
+      setReportSuccessId(review.id);
+      setReportingId(null);
+      setReportReason("");
+      if (onReviewReported) {
+        onReviewReported();
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Failed to report review");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -106,18 +147,76 @@ export const ReviewList = ({ reviews, isLoading }: ReviewListProps) => {
                       Verified Buyer
                     </span>
                   )}
+                  {review.status === "flagged" && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                      <ShieldAlert className="h-3 w-3" /> Under Moderation
+                    </span>
+                  )}
                 </div>
                 <span className="text-xs text-slate-500">
                   {formatDate(review.createdAt)}
                 </span>
               </div>
             </div>
-            <StarRating rating={review.rating} readonly size="sm" />
+            <div className="flex items-center gap-2">
+              <StarRating rating={review.rating} readonly size="sm" />
+              {currentWallet && (
+                <button
+                  onClick={() => {
+                    setReportingId(reportingId === review.id ? null : review.id);
+                    setErrorMsg(null);
+                  }}
+                  title="Report this review"
+                  className="p-1 text-slate-500 hover:text-rose-400 transition-colors"
+                >
+                  <Flag className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
           <p className="text-sm text-slate-300 leading-relaxed">
             {review.text}
           </p>
+
+          {/* Report Feedback / Form */}
+          {reportSuccessId === review.id && (
+            <div className="mt-3 flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg">
+              <CheckCircle2 className="h-4 w-4" /> Reported for maintainer moderation.
+            </div>
+          )}
+
+          {reportingId === review.id && (
+            <div className="mt-4 p-3 rounded-xl border border-white/10 bg-white/[0.03] space-y-2">
+              <label className="text-xs text-slate-300 font-medium">Reason for report:</label>
+              <input
+                type="text"
+                value={reportReason}
+                onChange={(e) => setReportReason(e.target.value)}
+                placeholder="Spam, offensive language, inaccurate rating..."
+                className="w-full text-xs bg-slate-900 border border-white/15 rounded-md p-2 text-white placeholder:text-slate-500"
+              />
+              {errorMsg && <p className="text-[11px] text-rose-400">{errorMsg}</p>}
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-slate-400"
+                  onClick={() => setReportingId(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 border border-rose-500/30"
+                  disabled={isSubmitting}
+                  onClick={() => handleReportSubmit(review)}
+                >
+                  Submit Report
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       ))}
     </div>
