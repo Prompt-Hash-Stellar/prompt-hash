@@ -152,6 +152,75 @@ All SDK methods throw typed errors. The REST API returns `{ error: string }` wit
 
 ---
 
+## Webhooks
+
+Receive real-time notifications when marketplace events occur.
+
+### Register a webhook
+
+```typescript
+const response = await fetch("https://api.prompthash.io/api/webhooks", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    walletAddress: "G...", // your creator wallet
+    url: "https://your-server.com/webhooks",
+    events: ["PromptPurchased", "PromptCreated"],
+  }),
+});
+
+const { secret } = await response.json();
+// Store secret securely — it's only shown once
+```
+
+### Verify webhook signatures
+
+```typescript
+import { createHmac } from "crypto";
+
+function verifySignature(
+  secret: string,
+  rawBody: string,
+  signature: string,
+): boolean {
+  const expected = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+  if (expected.length !== signature.length) return false;
+  let result = 0;
+  for (let i = 0; i < expected.length; i++) {
+    result |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+// Express example
+app.post("/webhooks", express.raw({ type: "application/json" }), (req, res) => {
+  const sig = req.headers["x-prompthash-signature"];
+  if (!verifySignature(SECRET, req.body.toString(), sig)) {
+    return res.status(401).json({ error: "Invalid signature" });
+  }
+
+  const event = JSON.parse(req.body);
+  const deliveryId = req.headers["x-prompthash-delivery"];
+
+  // Idempotency: skip if already processed
+  if (await wasProcessed(deliveryId)) {
+    return res.status(200).json({ received: true });
+  }
+
+  // Handle event...
+  await processEvent(event);
+  await markProcessed(deliveryId);
+
+  res.status(200).json({ received: true });
+});
+```
+
+### Handle retries
+
+PromptHash retries failed deliveries up to 3 times with exponential backoff (2s, 4s, 8s). Use the `X-PromptHash-Delivery` header for idempotency — each delivery attempt shares the same UUID.
+
+---
+
 ## TypeScript Types
 
 ```typescript
