@@ -9,6 +9,7 @@ const BrowsePage = lazy(() => import("./pages/browse/page.tsx"));
 const SellPage = lazy(() => import("./pages/sell/page.tsx"));
 const ChatHome = lazy(() => import("./pages/chat/page.tsx"));
 const ProfilePage = lazy(() => import("./pages/profile/page.tsx"));
+const PromptDetailPage = lazy(() => import("./pages/prompts/PromptDetailPage.tsx"));
 // Lazy load your new administrative layout entry block
 const AdminDashboard = lazy(() => import("./pages/admin/Dashboard.tsx"));
 
@@ -61,6 +62,7 @@ function App() {
           <Route path="/sell" element={<SellPage />} />
           <Route path="/chat" element={<ChatHome />} />
           <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/prompts/:id" element={<PromptDetailPage />} />
           
           {/* Admin Dashboard Route with Active Authentication Guard */}
           <Route
