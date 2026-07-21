@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import crypto from "crypto";
 
 export type AuditAction =
   | "challenge_issued"
@@ -9,7 +10,11 @@ export type AuditAction =
   | "unlock_no_access"
   | "unlock_integrity_failure"
   | "unlock_error"
-  | "unlock_rate_limited";
+  | "unlock_rate_limited"
+  | "kms_key_rotated"
+  | "kms_break_glass_triggered"
+  | "kms_key_revoked"
+  | "kms_key_suspended";
 
 export type AuditResult = "success" | "failure" | "blocked";
 
@@ -28,6 +33,10 @@ const auditLogSchema = new mongoose.Schema(
         "unlock_integrity_failure",
         "unlock_error",
         "unlock_rate_limited",
+        "kms_key_rotated",
+        "kms_break_glass_triggered",
+        "kms_key_revoked",
+        "kms_key_suspended",
       ] as AuditAction[],
       index: true,
     },
@@ -61,6 +70,14 @@ const auditLogSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    hash: {
+      type: String,
+      default: "",
+    },
+    previousHash: {
+      type: String,
+      default: "",
+    },
     // Sensitive fields are NEVER stored — only stable reason codes above.
     // No plaintext, no keys, no raw signatures, no challenge secrets.
   },
@@ -69,6 +86,39 @@ const auditLogSchema = new mongoose.Schema(
     // Append-only: disable update operations at the schema level via middleware.
   },
 );
+
+// Hash chaining middleware for tamper-evident audit logs
+auditLogSchema.pre("save", async function (next) {
+  try {
+    const latestDoc = await (this.constructor as any)
+      .findOne()
+      .sort({ createdAt: -1 });
+
+    const prevHash = latestDoc ? latestDoc.hash || "" : "0".repeat(64);
+    this.set("previousHash", prevHash);
+
+    const fieldsToHash = [
+      this.get("action") || "",
+      this.get("result") || "",
+      this.get("promptId") || "",
+      this.get("walletAddress") || "",
+      this.get("requestId") || "",
+      this.get("clientIp") || "",
+      this.get("reason") || "",
+      prevHash,
+    ];
+
+    const currentHash = crypto
+      .createHash("sha256")
+      .update(fieldsToHash.join("|"))
+      .digest("hex");
+
+    this.set("hash", currentHash);
+    next();
+  } catch (err: any) {
+    next(err);
+  }
+});
 
 // Compound indexes for common incident-review queries.
 auditLogSchema.index({ walletAddress: 1, createdAt: -1 });
@@ -88,3 +138,4 @@ auditLogSchema.pre("updateMany", function () {
 
 export const AuditLog =
   mongoose.models.AuditLog || mongoose.model("AuditLog", auditLogSchema);
+

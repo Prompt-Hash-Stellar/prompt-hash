@@ -12,6 +12,16 @@ import {
   unwrapPromptKey,
 } from "../../src/lib/crypto/promptCrypto";
 import {
+  decryptSymmetricSync,
+  getKmsMasterKeySync,
+  unwrapServerPrivateKey,
+  buildAAD,
+  validateKeyPolicy,
+  decryptPromptCiphertextWithAADSync,
+  buildPromptAAD,
+  buildKmsAAD,
+} from "../../src/lib/crypto/kms";
+import {
   getPrompt,
   hasAccess,
   type PromptHashConfig,
@@ -297,23 +307,92 @@ async function handler(
       return;
     }
 
+    // Check key policy rules (retention/hold/delisting)
+    try {
+      validateKeyPolicy(String(promptId));
+    } catch (policyErr: any) {
+      req.logger.warn({ address: redactedAddress, promptId }, policyErr.message);
+      res.status(403).json(apiError(ErrorCode.ACCESS_NOT_PURCHASED, policyErr.message));
+      return;
+    }
+
+    // Dynamic dispute hold check against FulfillmentRecord collection
+    try {
+      const FulfillmentRecord = (await import("../../server/src/models/FulfillmentRecord")).default;
+      const fulfillment = await FulfillmentRecord.findOne({
+        promptId: String(promptId),
+        buyerWallet: String(address).toLowerCase(),
+      });
+      if (fulfillment) {
+        if (fulfillment.status === "refund_requested") {
+          res.status(403).json(apiError(ErrorCode.ACCESS_NOT_PURCHASED, "Access is temporarily held due to an open dispute."));
+          return;
+        }
+        if (fulfillment.status === "refunded") {
+          res.status(403).json(apiError(ErrorCode.ACCESS_NOT_PURCHASED, "Access has been revoked following a refund."));
+          return;
+        }
+      }
+    } catch (dbErr) {
+      // Fire-and-forget: fail-safe db connection warnings
+      req.logger.warn({ promptId, error: dbErr instanceof Error ? dbErr.message : String(dbErr) }, "Fulfillment dispute checks bypassed");
+    }
+
     // 6. Decrypt plaintext content
     const prompt = await getPrompt(config, id);
-    const keyBytes = await unwrapPromptKey(
-      prompt.wrappedKey,
-      unlockPublicKey,
-      unlockPrivateKey,
-    );
+    const wrappedKeyStr = prompt.wrappedKey;
 
     const ciphertext = isIpfsReference(prompt.encryptedPrompt)
       ? await fetchCiphertextFromIpfs(prompt.encryptedPrompt)
       : prompt.encryptedPrompt;
 
-    const plaintext = await decryptPromptCiphertext(
-      ciphertext,
-      prompt.encryptionIv,
-      keyBytes,
-    );
+    let keyBytes: Uint8Array;
+    let plaintext: string;
+
+    if (wrappedKeyStr.startsWith("env:v2:")) {
+      // Envelope-encrypted DEK format: env:v2:<kmsKeyVersion>:<iv>:<tag>:<ciphertext>
+      const [, , kmsKeyVersion, kmsIv, kmsTag, kmsCiphertext] = wrappedKeyStr.split(":");
+      
+      const kmsAad = buildKmsAAD({
+        promptId: promptId.toString(),
+        creator: prompt.creator || "",
+        contentHash: prompt.contentHash || "",
+        version: "2.0.0",
+        nonce: prompt.encryptionIv,
+        ciphertext,
+      });
+
+      const kmsMasterKey = getKmsMasterKeySync(kmsKeyVersion);
+      keyBytes = decryptSymmetricSync(kmsCiphertext, kmsIv, kmsTag, kmsMasterKey, kmsAad);
+
+      const promptAad = buildPromptAAD({
+        promptId: promptId.toString(),
+        creator: prompt.creator || "",
+        contentHash: prompt.contentHash || "",
+        version: "2.0.0",
+        nonce: prompt.encryptionIv,
+      });
+      
+      plaintext = decryptPromptCiphertextWithAADSync(
+        ciphertext,
+        prompt.encryptionIv,
+        keyBytes,
+        promptAad,
+      );
+    } else {
+      // Legacy fallback
+      const decryptedPrivateKey = unwrapServerPrivateKey(unlockPrivateKey);
+      keyBytes = await unwrapPromptKey(
+        wrappedKeyStr,
+        unlockPublicKey,
+        decryptedPrivateKey,
+      );
+      plaintext = await decryptPromptCiphertext(
+        ciphertext,
+        prompt.encryptionIv,
+        keyBytes,
+      );
+    }
     const contentHash = await hashPromptPlaintext(plaintext);
     const storedHash = normalizeContentHash(prompt.contentHash);
     if (contentHash !== storedHash) {
@@ -368,7 +447,7 @@ async function handler(
     metrics.trackUnlockFailure(String(address), String(promptId), "error");
 
     const isExpired = message.toLowerCase().includes("expired");
-    const isMismatch = message.toLowerCase().includes("mismatch");
+    const isMismatch = message.toLowerCase().includes("mismatch") || message.toLowerCase().includes("does not match");
     const isInvalidSig = message.toLowerCase().includes("invalid challenge token signature");
 
     void recordAuditEvent({

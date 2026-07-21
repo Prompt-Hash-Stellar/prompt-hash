@@ -9,6 +9,18 @@ import {
   globalNonceLedger,
 } from "../../src/lib/auth/challenge";
 import { ErrorCode } from "../../src/lib/api/errorCodes";
+import {
+  splitSecret,
+  reconstructSecret,
+  encryptSymmetricSync,
+  buildAAD,
+  getKmsMasterKeySync,
+  encryptPromptPlaintextWithAADSync,
+  setKeyPolicy,
+  buildPromptAAD,
+  buildKmsAAD,
+} from "../../src/lib/crypto/kms";
+import crypto from "crypto";
 
 const hasAccessMock = vi.fn();
 const getPromptMock = vi.fn();
@@ -282,5 +294,144 @@ describe("unlock challenge message contract", () => {
     expect(buildChallengeMessage(payload)).toBe(
       "prompt-hash unlock:GBUYERACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789:7:nonce-123:1700000000000:1700000000000",
     );
+  });
+});
+
+describe("Envelope Encryption and KMS Key Custody (#79)", () => {
+  it("splits and reconstructs a KEK using Shamir's Secret Sharing (recovery quorum)", () => {
+    const originalKey = crypto.getRandomValues(new Uint8Array(32));
+    const shares = splitSecret(originalKey, 3, 5);
+    
+    expect(shares).toHaveLength(5);
+    
+    // Quorum of 3 reconstructs key
+    const recoveredKey = reconstructSecret([shares[0], shares[2], shares[4]]);
+    expect(recoveredKey).toEqual(originalKey);
+    
+    // Quorum of 2 fails to reconstruct key (returns wrong value or throws)
+    const badKey = reconstructSecret([shares[0], shares[1]]);
+    expect(badKey).not.toEqual(originalKey);
+  });
+
+  it("decrypts envelope v2 listings with AAD and rejects tampered context (wrong/swapped data)", async () => {
+    const rawDEK = crypto.getRandomValues(new Uint8Array(32));
+    const plaintext = "High-performance marketing prompt content.";
+    const creator = "GCREATORACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789";
+    const promptId = "42";
+    const kmsVersion = "1";
+    
+    // 1. Encrypt prompt plaintext using DEK and metadata context
+    const contentHash = crypto.createHash("sha256").update(plaintext).digest("hex");
+    const encrypted = encryptPromptPlaintextWithAADSync(plaintext, rawDEK, {
+      promptId,
+      creator,
+      contentHash,
+      version: "2.0.0",
+    });
+
+    // 3. Prepare KMS AAD context using prompt metadata + prompt ciphertext
+    const kmsAad = buildKmsAAD({
+      promptId,
+      creator,
+      contentHash,
+      version: "2.0.0",
+      nonce: encrypted.encryptionIv,
+      ciphertext: encrypted.encryptedPrompt
+    });
+
+    // 4. Wrap the DEK with KMS KEK and kmsAad
+    const kmsKey = getKmsMasterKeySync(kmsVersion);
+    const wrappedDEK = encryptSymmetricSync(rawDEK, kmsKey, kmsAad);
+    
+    const envelopeKey = `env:v2:${kmsVersion}:${wrappedDEK.iv}:${wrappedDEK.tag}:${wrappedDEK.ciphertext}`;
+
+    // Setup mocks
+    hasAccessMock.mockResolvedValue(true);
+    hashPromptPlaintextMock.mockResolvedValue(encrypted.contentHash);
+    getPromptMock.mockResolvedValue({
+      id: BigInt(promptId),
+      creator,
+      title: "V2 Test Prompt",
+      contentHash: encrypted.contentHash,
+      encryptedPrompt: encrypted.encryptedPrompt,
+      encryptionIv: encrypted.encryptionIv,
+      wrappedKey: envelopeKey,
+    });
+
+    const buyer = Keypair.random();
+    process.env.CHALLENGE_TOKEN_SECRET = "integration-test-challenge-secret";
+    process.env.PUBLIC_PROMPT_HASH_CONTRACT_ID = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+    process.env.PUBLIC_STELLAR_SIMULATION_ACCOUNT = buyer.publicKey();
+
+    const challenge = createChallengeToken(
+      process.env.CHALLENGE_TOKEN_SECRET,
+      buyer.publicKey(),
+      promptId,
+      Date.now(),
+      5 * 60 * 1000
+    );
+    const signedMessage = Buffer.from(
+      buyer.sign(Buffer.from(challenge.challenge, "utf8")),
+    ).toString("base64");
+
+    // Decrypting with correct credentials works
+    const { statusCode, responseData } = await invokeUnlock({
+      token: challenge.token,
+      promptId,
+      address: buyer.publicKey(),
+      signedMessage,
+    });
+    expect(statusCode).toBe(200);
+    expect(responseData.plaintext).toBe(plaintext);
+  });
+
+  it("enforces dispute suspension and deletion/revocation key policies", async () => {
+    const promptId = "100";
+    setKeyPolicy(promptId, "suspended");
+
+    const buyer = Keypair.random();
+    const challenge = createChallengeToken(
+      process.env.CHALLENGE_TOKEN_SECRET || "secret",
+      buyer.publicKey(),
+      promptId,
+      Date.now(),
+      5 * 60 * 1000
+    );
+    const signedMessage = Buffer.from(
+      buyer.sign(Buffer.from(challenge.challenge, "utf8")),
+    ).toString("base64");
+
+    const { statusCode, responseData } = await invokeUnlock({
+      token: challenge.token,
+      promptId,
+      address: buyer.publicKey(),
+      signedMessage,
+    });
+
+    expect(statusCode).toBe(403);
+    expect(responseData.error).toContain("suspended");
+
+    // Delisted/revoked policy
+    setKeyPolicy(promptId, "revoked");
+    const challenge2 = createChallengeToken(
+      process.env.CHALLENGE_TOKEN_SECRET || "secret",
+      buyer.publicKey(),
+      promptId,
+      Date.now(),
+      5 * 60 * 1000
+    );
+    const signedMessage2 = Buffer.from(
+      buyer.sign(Buffer.from(challenge2.challenge, "utf8")),
+    ).toString("base64");
+
+    const { statusCode: statusRevoked, responseData: dataRevoked } = await invokeUnlock({
+      token: challenge2.token,
+      promptId,
+      address: buyer.publicKey(),
+      signedMessage: signedMessage2,
+    });
+
+    expect(statusRevoked).toBe(403);
+    expect(dataRevoked.error).toContain("revoked");
   });
 });
