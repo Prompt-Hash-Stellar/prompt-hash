@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MarketplaceFilters } from "./MarketplaceFilters";
 import { renderWithProviders } from "@/test/render";
@@ -17,6 +17,10 @@ const defaultProps = {
   sortBy: "recent",
   setSortBy: vi.fn(),
   onClear: vi.fn(),
+  selectedCreator: "",
+  setSelectedCreator: vi.fn(),
+  selectedAvailability: "active",
+  setSelectedAvailability: vi.fn(),
 };
 
 describe("MarketplaceFilters", () => {
@@ -113,5 +117,46 @@ describe("MarketplaceFilters", () => {
     const maxInput = screen.getByLabelText("Maximum price in XLM");
     expect(maxInput).toBeInTheDocument();
     expect(maxInput.getAttribute("type")).toBe("range");
+  });
+
+  it("renders creator address section header and input", () => {
+    renderWithProviders(<MarketplaceFilters {...defaultProps} />);
+    expect(screen.getByText("Creator Address / Name")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Filter by creator address or name")
+    ).toBeInTheDocument();
+  });
+
+  it("calls setSelectedCreator when typing in creator input", () => {
+    const setSelectedCreator = vi.fn();
+    renderWithProviders(
+      <MarketplaceFilters
+        {...defaultProps}
+        setSelectedCreator={setSelectedCreator}
+      />
+    );
+    const input = screen.getByLabelText("Filter by creator address or name");
+    fireEvent.change(input, { target: { value: "GD1234" } });
+    expect(setSelectedCreator).toHaveBeenCalledWith("GD1234");
+  });
+
+  it("renders availability dropdown", () => {
+    renderWithProviders(<MarketplaceFilters {...defaultProps} />);
+    expect(screen.getByText("Availability")).toBeInTheDocument();
+    expect(screen.getByText("On Sale (Active)")).toBeInTheDocument();
+  });
+
+  it("shows Clear All button when a creator is selected", () => {
+    renderWithProviders(
+      <MarketplaceFilters {...defaultProps} selectedCreator="GD1234" />
+    );
+    expect(screen.getByText("Clear All Filters")).toBeInTheDocument();
+  });
+
+  it("shows Clear All button when availability is not active", () => {
+    renderWithProviders(
+      <MarketplaceFilters {...defaultProps} selectedAvailability="inactive" />
+    );
+    expect(screen.getByText("Clear All Filters")).toBeInTheDocument();
   });
 });

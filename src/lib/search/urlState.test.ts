@@ -53,7 +53,7 @@ describe("urlState", () => {
       window.history.replaceState(
         null,
         "",
-        "/?q=test&category=Sales&tag=AI&priceMin=0&priceMax=15&sort=sales",
+        "/?q=test&category=Sales&tag=AI&priceMin=0&priceMax=15&sort=sales&creator=GD1234&availability=inactive",
       );
       const state = getSearchStateFromUrl();
       expect(state.searchQuery).toBe("test");
@@ -61,6 +61,8 @@ describe("urlState", () => {
       expect(state.selectedTag).toBe("AI");
       expect(state.priceRange).toEqual([0, 15]);
       expect(state.sortBy).toBe("sales");
+      expect(state.selectedCreator).toBe("GD1234");
+      expect(state.selectedAvailability).toBe("inactive");
     });
   });
 
@@ -96,6 +98,22 @@ describe("urlState", () => {
       const qs = buildSearchQueryString({ sortBy: "price-low" });
       expect(qs).toContain("sort=price-low");
     });
+
+    it("should include creator and availability in query string", () => {
+      const qs = buildSearchQueryString({
+        selectedCreator: "GD1234",
+        selectedAvailability: "inactive",
+      });
+      expect(qs).toContain("creator=GD1234");
+      expect(qs).toContain("availability=inactive");
+    });
+
+    it("should not include default availability in query string", () => {
+      const qs = buildSearchQueryString({
+        selectedAvailability: "active",
+      });
+      expect(qs).not.toContain("availability");
+    });
   });
 
   describe("updateUrlWithSearchState", () => {
@@ -115,6 +133,22 @@ describe("urlState", () => {
       expect(window.location.search).not.toContain("q");
       expect(window.location.search).not.toContain("category");
     });
+
+    it("should update URL with creator and availability, and clear them", () => {
+      updateUrlWithSearchState({
+        selectedCreator: "GD5678",
+        selectedAvailability: "all",
+      });
+      expect(window.location.search).toContain("creator=GD5678");
+      expect(window.location.search).toContain("availability=all");
+
+      updateUrlWithSearchState({
+        selectedCreator: "",
+        selectedAvailability: "active",
+      });
+      expect(window.location.search).not.toContain("creator");
+      expect(window.location.search).not.toContain("availability");
+    });
   });
 
   describe("DEFAULT_SEARCH_STATE", () => {
@@ -123,6 +157,8 @@ describe("urlState", () => {
       expect(DEFAULT_SEARCH_STATE.selectedCategory).toBe("");
       expect(DEFAULT_SEARCH_STATE.priceRange).toEqual([0, 25]);
       expect(DEFAULT_SEARCH_STATE.sortBy).toBe("recent");
+      expect(DEFAULT_SEARCH_STATE.selectedCreator).toBe("");
+      expect(DEFAULT_SEARCH_STATE.selectedAvailability).toBe("active");
     });
   });
 });

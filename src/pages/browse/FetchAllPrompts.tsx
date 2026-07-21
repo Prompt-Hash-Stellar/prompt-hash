@@ -55,6 +55,8 @@ export interface FetchAllPromptsProps {
   onSetCategory?: (_category: string) => void;
   onSetTag?: (_tag: string) => void;
   onClearFilters?: () => void;
+  selectedCreator?: string;
+  selectedAvailability?: string;
 }
 
 const gridVariants = {
@@ -82,6 +84,8 @@ const FetchAllPrompts = ({
   onSetCategory,
   onSetTag,
   onClearFilters,
+  selectedCreator = "",
+  selectedAvailability = "active",
 }: FetchAllPromptsProps) => {
   const queryClient = useQueryClient();
   const { address } = useWallet();
@@ -196,6 +200,7 @@ const FetchAllPrompts = ({
 
   const filteredPrompts = useMemo(() => {
     const normalizedSearch = searchQuery.trim().toLowerCase();
+    const normalizedCreator = (selectedCreator || "").trim().toLowerCase();
     let prompts = (promptsQuery.data ?? []).filter((prompt) => {
       const promptPrice = parseXlmNumber(prompt.priceStroops);
       const matchesCategory =
@@ -217,13 +222,21 @@ const FetchAllPrompts = ({
         );
       const matchesPrice =
         promptPrice >= priceRange[0] && promptPrice <= priceRange[1];
+      const matchesCreator =
+        !normalizedCreator ||
+        prompt.creator.toLowerCase().includes(normalizedCreator);
+      const matchesAvailability =
+        selectedAvailability === "all" ||
+        (selectedAvailability === "active" && prompt.active) ||
+        (selectedAvailability === "inactive" && !prompt.active);
 
       return (
-        prompt.active &&
         matchesCategory &&
         matchesTag &&
         matchesSearch &&
-        matchesPrice
+        matchesPrice &&
+        matchesCreator &&
+        matchesAvailability
       );
     });
 
@@ -253,6 +266,8 @@ const FetchAllPrompts = ({
     selectedCategory,
     sortBy,
     selectedTag,
+    selectedCreator,
+    selectedAvailability,
   ]);
 
   const totalPages = Math.max(
@@ -270,7 +285,15 @@ const FetchAllPrompts = ({
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [priceRange, searchQuery, selectedCategory, selectedTag, sortBy]);
+  }, [
+    priceRange,
+    searchQuery,
+    selectedCategory,
+    selectedTag,
+    sortBy,
+    selectedCreator,
+    selectedAvailability,
+  ]);
 
   if (promptsQuery.isLoading) {
     return (
