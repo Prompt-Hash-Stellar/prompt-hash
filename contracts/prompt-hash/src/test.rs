@@ -205,6 +205,7 @@ fn test_buy_prompt_grants_access_to_multiple_buyers_and_tracks_exact_fees() {
         &12_345i128,
         &None::<Bytes>,
     );
+    client.release_funds_early(&buyer_one, &prompt_id);
     client.buy_prompt(
         &buyer_two,
         &prompt_id,
@@ -212,6 +213,7 @@ fn test_buy_prompt_grants_access_to_multiple_buyers_and_tracks_exact_fees() {
         &12_345i128,
         &None::<Bytes>,
     );
+    client.release_funds_early(&buyer_two, &prompt_id);
 
     let prompt = client.get_prompt(&prompt_id);
     assert_eq!(prompt.sales_count, 2);
@@ -256,6 +258,7 @@ fn test_fee_routing_pays_seller_and_platform_wallet_for_exact_purchase() {
     let fee_start = xlm_client.balance(&context.fee_wallet);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     let expected_fee = price * 500 / 10_000;
     let expected_seller_payout = price - expected_fee;
@@ -298,6 +301,7 @@ fn test_small_price_fee_rounding_keeps_fractional_fee_with_seller() {
     let fee_start = xlm_client.balance(&context.fee_wallet);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     assert_eq!(price * 500 / 10_000, 0);
     assert_eq!(xlm_client.balance(&creator), seller_start + price);
@@ -340,6 +344,7 @@ fn test_seller_payout_split_rounding_uses_integer_stroops() {
     let fee_start = xlm_client.balance(&context.fee_wallet);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     let expected_fee = price * 500 / 10_000;
     let expected_split = price * 333 / 10_000;
@@ -781,6 +786,7 @@ fn test_buy_prompt_with_zero_fee() {
     let fee_start = xlm_client.balance(&context.fee_wallet);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     assert_eq!(xlm_client.balance(&creator), seller_start + price);
     assert_eq!(xlm_client.balance(&context.fee_wallet), fee_start);
@@ -814,6 +820,7 @@ fn test_buy_prompt_with_max_fee() {
     let fee_start = xlm_client.balance(&context.fee_wallet);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     assert_eq!(xlm_client.balance(&creator), seller_start);
     assert_eq!(xlm_client.balance(&context.fee_wallet), fee_start + price);
@@ -906,6 +913,7 @@ fn test_arithmetic_safety_for_massive_prices() {
         &massive_price,
         &None::<Bytes>,
     );
+    client.release_funds_early(&buyer, &prompt_id);
 
     let fee_bps = 500i128;
     let expected_fee = massive_price * fee_bps / 10_000;
@@ -1037,6 +1045,7 @@ fn test_buy_prompt_with_referrer_splits_payment_correctly() {
         &price,
         &None::<Bytes>,
     );
+    client.release_funds_early(&buyer, &prompt_id);
 
     // fee = 10_000 * 500 / 10_000 = 500
     // referral = 10_000 * 500 / 10_000 = 500
@@ -1160,6 +1169,7 @@ fn test_buy_without_referrer_no_referral_amount_paid() {
     let fee_start = xlm_client.balance(&context.fee_wallet);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     // Without referrer: creator gets price - fee only
     let expected_fee = price * 500 / 10_000;
@@ -1445,6 +1455,7 @@ fn test_tip_above_price_succeeds_and_creator_receives_full_tip() {
         &total_payment,
         &None::<Bytes>,
     );
+    client.release_funds_early(&buyer, &prompt_id);
 
     // fee is on total payment: 15_000 * 500 / 10_000 = 750
     let expected_fee = total_payment * 500 / 10_000;
@@ -1562,6 +1573,7 @@ fn test_voucher_applies_discount_on_purchase() {
         &discounted_price,
         &Some(voucher_code),
     );
+    client.release_funds_early(&buyer, &prompt_id);
 
     let expected_fee = discounted_price * 500 / 10_000;
     let expected_creator = discounted_price - expected_fee;
@@ -1779,6 +1791,7 @@ fn test_voucher_with_referrer_combined() {
         &discounted_price,
         &Some(voucher_code),
     );
+    client.release_funds_early(&buyer, &prompt_id);
 
     // fee = 9_000 * 500 / 10_000 = 450
     // referral = 9_000 * 500 / 10_000 = 450
@@ -1827,6 +1840,7 @@ fn test_buy_prompt_with_non_xlm_asset() {
     let fee_start = usdc_client.balance(&context.fee_wallet);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     let expected_fee = price * 500 / 10_000;
     let expected_creator = price - expected_fee;
@@ -1885,6 +1899,7 @@ fn test_create_and_buy_different_assets() {
         &xlm_price,
         &None::<Bytes>,
     );
+    client.release_funds_early(&buyer, &prompt_xlm);
 
     let xlm_fee = xlm_price * 500 / 10_000;
     assert_eq!(
@@ -1902,6 +1917,7 @@ fn test_create_and_buy_different_assets() {
         &usdc_price,
         &None::<Bytes>,
     );
+    client.release_funds_early(&buyer, &prompt_usdc);
 
     let usdc_fee = usdc_price * 500 / 10_000;
     assert_eq!(
@@ -2260,6 +2276,7 @@ fn test_buy_prompt_with_splits_distributes_correctly() {
     let fee_start = xlm_client.balance(&context.fee_wallet);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     let expected_fee = price * 500 / 10_000; // 500
     let expected_split = price * 2_000 / 10_000; // 2_000
@@ -2375,6 +2392,7 @@ fn test_multiple_splits_distribute_all_recipients() {
     let co2_start = xlm_client.balance(&co2);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     assert_eq!(
         xlm_client.balance(&creator),
@@ -2414,6 +2432,8 @@ fn test_buy_prompts_bulk_purchases_all_and_grants_access() {
     amounts.push_back(price_b);
 
     client.buy_prompts_bulk(&buyer, &ids, &amounts, &None::<Address>);
+    client.release_funds_early(&buyer, &prompt_a);
+    client.release_funds_early(&buyer, &prompt_b);
 
     assert!(client.has_access(&buyer, &prompt_a));
     assert!(client.has_access(&buyer, &prompt_b));
@@ -2517,6 +2537,8 @@ fn test_buy_prompts_bulk_with_referrer() {
 
     let referrer_start = xlm_client.balance(&referrer);
     client.buy_prompts_bulk(&buyer, &ids, &amounts, &Some(referrer.clone()));
+    client.release_funds_early(&buyer, &prompt_a);
+    client.release_funds_early(&buyer, &prompt_b);
 
     // referral = 10_000 * 500 / 10_000 = 500 per prompt × 2
     let expected_referral = price * 500 / 10_000 * 2;
@@ -2718,6 +2740,7 @@ fn test_update_splits_replaces_existing_splits() {
     let creator_start = xlm_client.balance(&creator);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
     let expected_fee = price * 500 / 10_000;
     let expected_co1 = price * 500 / 10_000;
@@ -3591,4 +3614,151 @@ fn test_inactive_prompt_purchase_fails_with_correct_error() {
     client.set_prompt_sale_status(&creator, &prompt_id, &true);
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
     assert!(client.has_access(&buyer, &prompt_id));
+}
+
+#[test]
+fn test_escrow_backed_refunds_and_dispute_voting_flow() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let reviewer1 = Address::generate(&env);
+    let reviewer2 = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    // Register reviewers and set threshold to 2
+    client.add_reviewer(&context.admin, &reviewer1);
+    client.add_reviewer(&context.admin, &reviewer2);
+    client.set_reviewer_threshold(&context.admin, &2);
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Dispute Escrow Test", price, &context.xlm);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    // 1. Purchase prompt
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+
+    // Verify funds held in contract (conservation of value property)
+    assert_eq!(xlm_client.balance(&context.contract), price);
+    assert_eq!(xlm_client.balance(&creator), 0);
+
+    // Verify initial access
+    assert!(client.has_access(&buyer, &prompt_id));
+
+    // 2. Open dispute
+    client.open_dispute(&buyer, &prompt_id, &crate::types::DisputeReason::FailedIntegrityVerification);
+
+    // Verify access suspended
+    assert!(!client.has_access(&buyer, &prompt_id));
+
+    // 3. Submit evidence
+    let evidence_hash = hash(&env, 99);
+    client.submit_evidence(&buyer, &prompt_id, &buyer, &evidence_hash);
+
+    // Verify conflict check: creator/buyer cannot vote
+    let fail_vote1 = client.try_vote_on_dispute(&creator, &prompt_id, &buyer, &true);
+    assert!(fail_vote1.is_err());
+
+    // 4. Vote on dispute
+    client.vote_on_dispute(&reviewer1, &prompt_id, &buyer, &true); // vote for refund
+    client.vote_on_dispute(&reviewer2, &prompt_id, &buyer, &true); // second vote for refund -> triggers resolution
+
+    // Verify dispute resolved as Refunded, license revoked, buyer refunded
+    let escrow = client.get_escrow(&prompt_id, &buyer);
+    assert_eq!(escrow.state, crate::types::EscrowState::Refunded);
+    
+    // Warp ledger time past appeal window to execute final timeout payout
+    env.ledger().with_mut(|l| {
+        l.timestamp = l.timestamp + 3 * 24 * 3600 + 1;
+    });
+    client.resolve_dispute_timeout(&prompt_id, &buyer);
+
+    assert_eq!(xlm_client.balance(&buyer), price);
+    assert_eq!(xlm_client.balance(&context.contract), 0);
+    assert!(!client.has_access(&buyer, &prompt_id));
+}
+
+#[test]
+fn test_escrow_timeout_releases_funds_to_creator() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Timeout Test", price, &context.xlm);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+
+    // Verify timeout can't be resolved early
+    let fail_timeout = client.try_resolve_escrow_timeout(&prompt_id, &buyer);
+    assert!(fail_timeout.is_err());
+
+    // Warp ledger time past 7-day dispute window (7 * 24 * 3600 = 604,800 secs)
+    env.ledger().with_mut(|l| {
+        l.timestamp = l.timestamp + 604_801;
+    });
+
+    // Resolve timeout
+    client.resolve_escrow_timeout(&prompt_id, &buyer);
+
+    // Verify funds released to creator (minus platform fee of 5%)
+    let expected_fee = price * 500 / 10_000;
+    let expected_creator = price - expected_fee;
+    assert_eq!(xlm_client.balance(&creator), expected_creator);
+    assert_eq!(xlm_client.balance(&context.fee_wallet), expected_fee);
+
+    // Buyer keeps access
+    assert!(client.has_access(&buyer, &prompt_id));
+}
+
+#[test]
+fn test_dispute_appeal_mechanics() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let reviewer = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    client.add_reviewer(&context.admin, &reviewer);
+    client.set_reviewer_threshold(&context.admin, &1);
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Appeal Test", price, &context.xlm);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.open_dispute(&buyer, &prompt_id, &crate::types::DisputeReason::MissingMetadata);
+
+    // Reviewer votes to reject dispute (ruling in favor of creator)
+    client.vote_on_dispute(&reviewer, &prompt_id, &buyer, &false);
+
+    let escrow = client.get_escrow(&prompt_id, &buyer);
+    assert_eq!(escrow.state, crate::types::EscrowState::Rejected);
+
+    // Creator or Buyer can appeal within 3 days
+    client.appeal_resolution(&buyer, &prompt_id, &buyer);
+
+    // Verify state back to Disputed and marked as appealed
+    let escrow = client.get_escrow(&prompt_id, &buyer);
+    assert_eq!(escrow.state, crate::types::EscrowState::Disputed);
+    assert!(escrow.is_appealed);
+
+    // Admin resolves the appeal (ruling in favor of buyer)
+    client.resolve_appealed_dispute(&context.admin, &prompt_id, &buyer, &true);
+
+    // Verify buyer is refunded and license revoked
+    let escrow = client.get_escrow(&prompt_id, &buyer);
+    assert_eq!(escrow.state, crate::types::EscrowState::Refunded);
+    assert_eq!(xlm_client.balance(&buyer), price);
+    assert!(!client.has_access(&buyer, &prompt_id));
 }

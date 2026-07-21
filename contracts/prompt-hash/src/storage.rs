@@ -1,5 +1,6 @@
 use super::types::{
     DataKey, Error, InstanceDataKey, ListingRevisionRecord, Prompt, Purchase, PurchaseDispute,
+    Escrow,
 };
 use soroban_sdk::{token, Address, BytesN, Env, Vec};
 
@@ -100,6 +101,16 @@ impl InstanceStorage {
     pub fn is_paused(env: &Env) -> bool {
         let key = InstanceDataKey::IsPaused;
         env.storage().instance().get(&key).unwrap_or(false)
+    }
+
+    pub fn set_reviewer_threshold(env: &Env, threshold: u32) {
+        let key = InstanceDataKey::ReviewerThreshold;
+        env.storage().instance().set(&key, &threshold);
+    }
+
+    pub fn get_reviewer_threshold(env: &Env) -> u32 {
+        let key = InstanceDataKey::ReviewerThreshold;
+        env.storage().instance().get(&key).unwrap_or(1)
     }
 }
 
@@ -349,6 +360,40 @@ impl Storage {
         buyer: &Address,
     ) -> Result<PurchaseDispute, Error> {
         Self::get_dispute(env, prompt_id, buyer).ok_or(Error::DisputeNotFound)
+    }
+
+    pub fn save_escrow(env: &Env, escrow: &Escrow) {
+        let key = DataKey::Escrow(escrow.prompt_id, escrow.buyer.clone());
+        env.storage().persistent().set(&key, escrow);
+        Self::extend_key_ttl(env, &key);
+    }
+
+    pub fn get_escrow(env: &Env, prompt_id: u64, buyer: &Address) -> Option<Escrow> {
+        let key = DataKey::Escrow(prompt_id, buyer.clone());
+        let escrow = env.storage().persistent().get(&key);
+        if env.storage().persistent().has(&key) {
+            Self::extend_key_ttl(env, &key);
+        }
+        escrow
+    }
+
+    pub fn require_escrow(env: &Env, prompt_id: u64, buyer: &Address) -> Result<Escrow, Error> {
+        Self::get_escrow(env, prompt_id, buyer).ok_or(Error::EscrowNotFound)
+    }
+
+    pub fn get_reviewers(env: &Env) -> Vec<Address> {
+        let key = DataKey::Reviewers;
+        let reviewers = env.storage().persistent().get(&key);
+        if env.storage().persistent().has(&key) {
+            Self::extend_key_ttl(env, &key);
+        }
+        reviewers.unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn save_reviewers(env: &Env, reviewers: &Vec<Address>) {
+        let key = DataKey::Reviewers;
+        env.storage().persistent().set(&key, reviewers);
+        Self::extend_key_ttl(env, &key);
     }
 
     pub fn add_voucher(env: &Env, prompt_id: u64, hashed_code: &BytesN<32>, discount_bps: u32) {
