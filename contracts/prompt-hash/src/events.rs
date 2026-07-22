@@ -281,4 +281,105 @@ impl Events {
         }
         .publish(env);
     }
+
+    pub fn emit_escrow_created(env: &Env, prompt_id: u64, buyer: Address, price: i128) {
+        EscrowCreated {
+            prompt_id,
+            buyer,
+            price,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_evidence_submitted(
+        env: &Env,
+        prompt_id: u64,
+        buyer: Address,
+        submitter: Address,
+        evidence_hash: soroban_sdk::BytesN<32>,
+    ) {
+        EvidenceSubmitted {
+            prompt_id,
+            buyer,
+            submitter,
+            evidence_hash,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_dispute_voted(
+        env: &Env,
+        prompt_id: u64,
+        buyer: Address,
+        reviewer: Address,
+        refund: bool,
+    ) {
+        DisputeVoted {
+            prompt_id,
+            buyer,
+            reviewer,
+            refund,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_escrow_released(env: &Env, prompt_id: u64, buyer: Address) {
+        EscrowReleased { prompt_id, buyer }.publish(env);
+    }
+
+    pub fn emit_escrow_refunded(env: &Env, prompt_id: u64, buyer: Address) {
+        EscrowRefunded { prompt_id, buyer }.publish(env);
+    }
+
+    pub fn emit_dispute_appealed(env: &Env, prompt_id: u64, buyer: Address) {
+        DisputeAppealed { prompt_id, buyer }.publish(env);
+    }
 }
+
+#[contractevent]
+pub struct EscrowCreated {
+    #[topic]
+    pub prompt_id: u64,
+    pub buyer: Address,
+    pub price: i128,
+}
+
+#[contractevent]
+pub struct EvidenceSubmitted {
+    #[topic]
+    pub prompt_id: u64,
+    pub buyer: Address,
+    pub submitter: Address,
+    pub evidence_hash: soroban_sdk::BytesN<32>,
+}
+
+#[contractevent]
+pub struct DisputeVoted {
+    #[topic]
+    pub prompt_id: u64,
+    pub buyer: Address,
+    pub reviewer: Address,
+    pub refund: bool,
+}
+
+#[contractevent]
+pub struct EscrowReleased {
+    #[topic]
+    pub prompt_id: u64,
+    pub buyer: Address,
+}
+
+#[contractevent]
+pub struct EscrowRefunded {
+    #[topic]
+    pub prompt_id: u64,
+    pub buyer: Address,
+}
+
+#[contractevent]
+pub struct DisputeAppealed {
+    #[topic]
+    pub prompt_id: u64,
+    pub buyer: Address,
+}
+

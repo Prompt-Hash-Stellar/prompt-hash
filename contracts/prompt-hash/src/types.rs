@@ -41,6 +41,15 @@ pub enum Error {
     DisputeAlreadyOpen = 35,
     DisputeNotFound = 36,
     DisputeResolved = 37,
+    ConflictOfInterest = 38,
+    InvalidEscrowState = 39,
+    EscrowNotFound = 40,
+    NotAReviewer = 41,
+    DuplicateVote = 42,
+    DisputeNotExpired = 43,
+    DisputeExpired = 44,
+    AppealWindowExpired = 45,
+    ReviewerThresholdNotMet = 46,
 }
 
 /// Instance storage keys — contract-level configuration stored in
@@ -55,6 +64,7 @@ pub enum InstanceDataKey {
     Reentrancy,
     ReferralPercentage,
     IsPaused,
+    ReviewerThreshold,
 }
 
 /// Persistent storage keys — per-prompt and per-user data stored in
@@ -69,6 +79,8 @@ pub enum DataKey {
     VoucherKey(u64, BytesN<32>),
     ListingRevision(u64, u32),
     PurchaseDispute(u64, Address),
+    Escrow(u64, Address),
+    Reviewers,
 }
 
 #[contracttype]
@@ -109,6 +121,46 @@ pub struct Purchase {
     pub transfer_count: u32,
     pub last_transferred_at: u64,
     pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum EscrowState {
+    Pending = 0,
+    Fulfilled = 1,
+    Disputed = 2,
+    Released = 3,
+    Refunded = 4,
+    Rejected = 5,
+    Expired = 6,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Escrow {
+    pub prompt_id: u64,
+    pub buyer: Address,
+    pub creator: Address,
+    pub asset: Address,
+    pub price: i128,
+    pub fee_percentage: u32,
+    pub fee_wallet: Address,
+    pub referral_percentage: u32,
+    pub referrer: Option<Address>,
+    pub splits: Vec<Split>,
+    pub content_hash: BytesN<32>,
+    pub created_at: u64,
+    pub dispute_window_expiry: u64,
+    pub state: EscrowState,
+    pub dispute_opened_at: u64,
+    pub resolution_deadline: u64,
+    pub evidence_hashes: Vec<BytesN<32>>,
+    pub voters: Vec<Address>,
+    pub votes_for_refund: u32,
+    pub votes_for_reject: u32,
+    pub is_appealed: bool,
+    pub dispute_resolved_at: u64,
 }
 
 #[contracttype]
@@ -369,4 +421,54 @@ pub trait PromptHashTrait {
     /// Bulk-extend TTL for all active storage entries. Intended for periodic
     /// admin maintenance (#26).
     fn extend_all_ttl(env: Env) -> Result<(), Error>;
+
+    // Dispute and Escrow resolution methods
+    fn submit_evidence(
+        env: Env,
+        party: Address,
+        prompt_id: u64,
+        buyer: Address,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), Error>;
+
+    fn vote_on_dispute(
+        env: Env,
+        reviewer: Address,
+        prompt_id: u64,
+        buyer: Address,
+        refund: bool,
+    ) -> Result<(), Error>;
+
+    fn appeal_resolution(
+        env: Env,
+        party: Address,
+        prompt_id: u64,
+        buyer: Address,
+    ) -> Result<(), Error>;
+
+    fn resolve_appealed_dispute(
+        env: Env,
+        admin: Address,
+        prompt_id: u64,
+        buyer: Address,
+        refund: bool,
+    ) -> Result<(), Error>;
+
+    fn release_funds_early(env: Env, buyer: Address, prompt_id: u64) -> Result<(), Error>;
+
+    fn resolve_escrow_timeout(env: Env, prompt_id: u64, buyer: Address) -> Result<(), Error>;
+
+    fn resolve_dispute_timeout(env: Env, prompt_id: u64, buyer: Address) -> Result<(), Error>;
+
+    fn add_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error>;
+
+    fn remove_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error>;
+
+    fn set_reviewer_threshold(env: Env, admin: Address, threshold: u32) -> Result<(), Error>;
+
+    fn get_reviewer_threshold(env: Env) -> u32;
+
+    fn get_reviewers(env: Env) -> Vec<Address>;
+
+    fn get_escrow(env: Env, prompt_id: u64, buyer: Address) -> Result<Escrow, Error>;
 }

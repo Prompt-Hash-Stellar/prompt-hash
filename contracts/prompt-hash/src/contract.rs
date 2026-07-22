@@ -2,7 +2,7 @@ use super::events::Events;
 use super::storage::{InstanceStorage, Storage};
 use super::types::{
     DataKey, DisputeReason, DisputeStatus, Error, ListingConfig, ListingRevisionRecord, Prompt,
-    PromptHashTrait, PurchaseDispute, Split,
+    PromptHashTrait, PurchaseDispute, Split, Escrow, EscrowState,
 };
 use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
@@ -450,8 +450,21 @@ impl PromptHashTrait for PromptHashContract {
 
     fn has_access(env: Env, user: Address, prompt_id: u64) -> Result<bool, Error> {
         let prompt = Storage::require_prompt(&env, prompt_id)?;
+        if prompt.creator == user {
+            return Ok(true);
+        }
         let now = env.ledger().timestamp();
-        Ok(prompt.creator == user || Storage::has_active_purchase(&env, prompt_id, &user, now))
+        if !Storage::has_active_purchase(&env, prompt_id, &user, now) {
+            return Ok(false);
+        }
+        if let Some(escrow) = Storage::get_escrow(&env, prompt_id, &user) {
+            match escrow.state {
+                EscrowState::Disputed | EscrowState::Refunded => Ok(false),
+                _ => Ok(true),
+            }
+        } else {
+            Ok(true)
+        }
     }
 
     fn get_prompt(env: Env, prompt_id: u64) -> Result<Prompt, Error> {
@@ -482,12 +495,17 @@ impl PromptHashTrait for PromptHashContract {
         ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
         let now = env.ledger().timestamp();
         Storage::require_purchase(&env, prompt_id, &buyer)?;
-        if let Some(dispute) = Storage::get_dispute(&env, prompt_id, &buyer) {
-            ensure(
-                dispute.status != DisputeStatus::Open,
-                Error::DisputeAlreadyOpen,
-            )?;
-        }
+        
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        ensure(escrow.state == EscrowState::Pending, Error::InvalidEscrowState)?;
+        ensure(now <= escrow.dispute_window_expiry, Error::DisputeExpired)?;
+
+        escrow.state = EscrowState::Disputed;
+        escrow.dispute_opened_at = now;
+        escrow.resolution_deadline = now.checked_add(14 * 24 * 60 * 60).ok_or(Error::ArithmeticOverflow)?;
+        Storage::save_escrow(&env, &escrow);
+
+        // Also create/update legacy PurchaseDispute for backward compatibility
         let dispute = PurchaseDispute {
             prompt_id,
             buyer: buyer.clone(),
@@ -497,6 +515,7 @@ impl PromptHashTrait for PromptHashContract {
             status: DisputeStatus::Open,
         };
         Storage::save_dispute(&env, &dispute);
+
         Events::emit_dispute_opened(&env, prompt_id, buyer);
         Ok(())
     }
@@ -511,28 +530,30 @@ impl PromptHashTrait for PromptHashContract {
         admin.require_auth();
         let owner = ownable::get_owner(&env).ok_or(Error::Unauthorized)?;
         ensure(owner == admin, Error::Unauthorized)?;
-        let prompt = Storage::require_prompt(&env, prompt_id)?;
-        let purchase = Storage::require_purchase(&env, prompt_id, &buyer)?;
-        let mut dispute = Storage::require_dispute(&env, prompt_id, &buyer)?;
-        ensure(
-            dispute.status == DisputeStatus::Open,
-            Error::DisputeResolved,
-        )?;
-        dispute.resolved_at = env.ledger().timestamp();
-        if refund {
-            let asset_client = token::StellarAssetClient::new(&env, &prompt.asset);
-            asset_client.transfer(
-                &env.current_contract_address(),
-                &buyer,
-                &purchase.original_price,
-            );
-            Storage::remove_purchase(&env, prompt_id, &buyer);
-            Storage::remove_prompt_from_buyer(&env, &buyer, prompt_id);
-            dispute.status = DisputeStatus::Refunded;
-        } else {
-            dispute.status = DisputeStatus::Rejected;
+        ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
+
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        if escrow.state == EscrowState::Refunded
+            || escrow.state == EscrowState::Released
+            || escrow.state == EscrowState::Rejected
+            || escrow.state == EscrowState::Expired
+        {
+            return Err(Error::DisputeResolved);
         }
-        Storage::save_dispute(&env, &dispute);
+        ensure(escrow.state == EscrowState::Disputed, Error::InvalidEscrowState)?;
+
+        execute_resolution_transfer(&env, &mut escrow, refund)?;
+        escrow.state = if refund { EscrowState::Refunded } else { EscrowState::Released };
+        escrow.dispute_resolved_at = env.ledger().timestamp();
+        Storage::save_escrow(&env, &escrow);
+
+        // Also update legacy PurchaseDispute for backward compatibility
+        if let Some(mut dispute) = Storage::get_dispute(&env, prompt_id, &buyer) {
+            dispute.resolved_at = env.ledger().timestamp();
+            dispute.status = if refund { DisputeStatus::Refunded } else { DisputeStatus::Rejected };
+            Storage::save_dispute(&env, &dispute);
+        }
+
         Events::emit_dispute_resolved(&env, prompt_id, buyer, refund);
         Ok(())
     }
@@ -682,6 +703,314 @@ impl PromptHashTrait for PromptHashContract {
         Storage::extend_all_ttl(&env);
         Ok(())
     }
+
+    fn submit_evidence(
+        env: Env,
+        party: Address,
+        prompt_id: u64,
+        buyer: Address,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        party.require_auth();
+        ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        ensure(escrow.state == EscrowState::Disputed, Error::InvalidEscrowState)?;
+        ensure(
+            party == escrow.buyer || party == escrow.creator,
+            Error::Unauthorized,
+        )?;
+
+        escrow.evidence_hashes.push_back(evidence_hash.clone());
+        Storage::save_escrow(&env, &escrow);
+
+        Events::emit_evidence_submitted(&env, prompt_id, buyer, party, evidence_hash);
+        Ok(())
+    }
+
+    fn vote_on_dispute(
+        env: Env,
+        reviewer: Address,
+        prompt_id: u64,
+        buyer: Address,
+        refund: bool,
+    ) -> Result<(), Error> {
+        reviewer.require_auth();
+        ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
+        
+        let reviewers = Storage::get_reviewers(&env);
+        let mut is_reviewer = false;
+        for r in reviewers.iter() {
+            if r == reviewer {
+                is_reviewer = true;
+                break;
+            }
+        }
+        ensure(is_reviewer, Error::NotAReviewer)?;
+
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        ensure(escrow.state == EscrowState::Disputed, Error::InvalidEscrowState)?;
+        ensure(!escrow.is_appealed, Error::InvalidEscrowState)?;
+
+        // Conflict check
+        ensure(reviewer != escrow.buyer && reviewer != escrow.creator, Error::ConflictOfInterest)?;
+        for split in escrow.splits.iter() {
+            ensure(reviewer != split.recipient, Error::ConflictOfInterest)?;
+        }
+
+        // Duplicate vote check
+        for v in escrow.voters.iter() {
+            ensure(v != reviewer, Error::DuplicateVote)?;
+        }
+
+        escrow.voters.push_back(reviewer.clone());
+        if refund {
+            escrow.votes_for_refund = escrow.votes_for_refund.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+        } else {
+            escrow.votes_for_reject = escrow.votes_for_reject.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        Events::emit_dispute_voted(&env, prompt_id, buyer.clone(), reviewer, refund);
+
+        let threshold = InstanceStorage::get_reviewer_threshold(&env);
+        if escrow.votes_for_refund >= threshold {
+            escrow.state = EscrowState::Refunded;
+            escrow.dispute_resolved_at = env.ledger().timestamp();
+            Storage::save_escrow(&env, &escrow);
+
+            // Also update legacy PurchaseDispute for backward compatibility
+            if let Some(mut dispute) = Storage::get_dispute(&env, prompt_id, &buyer) {
+                dispute.resolved_at = env.ledger().timestamp();
+                dispute.status = DisputeStatus::Refunded;
+                Storage::save_dispute(&env, &dispute);
+            }
+            Events::emit_dispute_resolved(&env, prompt_id, buyer, true);
+        } else if escrow.votes_for_reject >= threshold {
+            escrow.state = EscrowState::Rejected;
+            escrow.dispute_resolved_at = env.ledger().timestamp();
+            Storage::save_escrow(&env, &escrow);
+
+            // Also update legacy PurchaseDispute for backward compatibility
+            if let Some(mut dispute) = Storage::get_dispute(&env, prompt_id, &buyer) {
+                dispute.resolved_at = env.ledger().timestamp();
+                dispute.status = DisputeStatus::Rejected;
+                Storage::save_dispute(&env, &dispute);
+            }
+            Events::emit_dispute_resolved(&env, prompt_id, buyer, false);
+        } else {
+            Storage::save_escrow(&env, &escrow);
+        }
+
+        Ok(())
+    }
+
+    fn appeal_resolution(
+        env: Env,
+        party: Address,
+        prompt_id: u64,
+        buyer: Address,
+    ) -> Result<(), Error> {
+        party.require_auth();
+        ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
+        
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        ensure(
+            escrow.state == EscrowState::Refunded || escrow.state == EscrowState::Rejected,
+            Error::InvalidEscrowState,
+        )?;
+        ensure(
+            party == escrow.buyer || party == escrow.creator,
+            Error::Unauthorized,
+        )?;
+        
+        let now = env.ledger().timestamp();
+        let appeal_window = 3 * 24 * 60 * 60; // 3 days
+        ensure(
+            now <= escrow.dispute_resolved_at.checked_add(appeal_window).ok_or(Error::ArithmeticOverflow)?,
+            Error::AppealWindowExpired,
+        )?;
+
+        escrow.is_appealed = true;
+        escrow.state = EscrowState::Disputed;
+        Storage::save_escrow(&env, &escrow);
+
+        Events::emit_dispute_appealed(&env, prompt_id, buyer);
+        Ok(())
+    }
+
+    fn resolve_appealed_dispute(
+        env: Env,
+        admin: Address,
+        prompt_id: u64,
+        buyer: Address,
+        refund: bool,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let owner = ownable::get_owner(&env).ok_or(Error::Unauthorized)?;
+        ensure(owner == admin, Error::Unauthorized)?;
+        ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
+        
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        ensure(escrow.is_appealed, Error::InvalidEscrowState)?;
+        
+        execute_resolution_transfer(&env, &mut escrow, refund)?;
+        escrow.state = if refund { EscrowState::Refunded } else { EscrowState::Released };
+        escrow.is_appealed = false;
+        escrow.dispute_resolved_at = env.ledger().timestamp();
+        Storage::save_escrow(&env, &escrow);
+
+        // Also update legacy PurchaseDispute for backward compatibility
+        if let Some(mut dispute) = Storage::get_dispute(&env, prompt_id, &buyer) {
+            dispute.resolved_at = env.ledger().timestamp();
+            dispute.status = if refund { DisputeStatus::Refunded } else { DisputeStatus::Rejected };
+            Storage::save_dispute(&env, &dispute);
+        }
+
+        Events::emit_dispute_resolved(&env, prompt_id, buyer, refund);
+        Ok(())
+    }
+
+    fn release_funds_early(env: Env, buyer: Address, prompt_id: u64) -> Result<(), Error> {
+        buyer.require_auth();
+        ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
+        
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        ensure(escrow.state == EscrowState::Pending, Error::InvalidEscrowState)?;
+        
+        execute_resolution_transfer(&env, &mut escrow, false)?;
+        escrow.state = EscrowState::Released;
+        Storage::save_escrow(&env, &escrow);
+        Ok(())
+    }
+
+    fn resolve_escrow_timeout(env: Env, prompt_id: u64, buyer: Address) -> Result<(), Error> {
+        ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
+        
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        ensure(escrow.state == EscrowState::Pending, Error::InvalidEscrowState)?;
+        
+        let now = env.ledger().timestamp();
+        ensure(now > escrow.dispute_window_expiry, Error::DisputeNotExpired)?;
+        
+        execute_resolution_transfer(&env, &mut escrow, false)?;
+        escrow.state = EscrowState::Expired;
+        Storage::save_escrow(&env, &escrow);
+        Ok(())
+    }
+
+    fn resolve_dispute_timeout(env: Env, prompt_id: u64, buyer: Address) -> Result<(), Error> {
+        ensure(!InstanceStorage::is_paused(&env), Error::ContractIsPaused)?;
+        
+        let mut escrow = Storage::require_escrow(&env, prompt_id, &buyer)?;
+        let now = env.ledger().timestamp();
+        
+        if escrow.state == EscrowState::Disputed {
+            ensure(!escrow.is_appealed, Error::InvalidEscrowState)?;
+            ensure(now > escrow.resolution_deadline, Error::DisputeNotExpired)?;
+            
+            execute_resolution_transfer(&env, &mut escrow, false)?;
+            escrow.state = EscrowState::Expired;
+            escrow.dispute_resolved_at = now;
+            Storage::save_escrow(&env, &escrow);
+
+            // Also update legacy PurchaseDispute for backward compatibility
+            if let Some(mut dispute) = Storage::get_dispute(&env, prompt_id, &buyer) {
+                dispute.resolved_at = now;
+                dispute.status = DisputeStatus::Rejected;
+                Storage::save_dispute(&env, &dispute);
+            }
+            Events::emit_dispute_resolved(&env, prompt_id, buyer, false);
+        } else if escrow.state == EscrowState::Refunded {
+            ensure(!escrow.is_appealed, Error::InvalidEscrowState)?;
+            let appeal_window = 3 * 24 * 60 * 60;
+            ensure(
+                now > escrow.dispute_resolved_at.checked_add(appeal_window).ok_or(Error::ArithmeticOverflow)?,
+                Error::DisputeNotExpired,
+            )?;
+            
+            execute_resolution_transfer(&env, &mut escrow, true)?;
+            escrow.state = EscrowState::Refunded;
+            Storage::save_escrow(&env, &escrow);
+        } else if escrow.state == EscrowState::Rejected {
+            ensure(!escrow.is_appealed, Error::InvalidEscrowState)?;
+            let appeal_window = 3 * 24 * 60 * 60;
+            ensure(
+                now > escrow.dispute_resolved_at.checked_add(appeal_window).ok_or(Error::ArithmeticOverflow)?,
+                Error::DisputeNotExpired,
+            )?;
+            
+            execute_resolution_transfer(&env, &mut escrow, false)?;
+            escrow.state = EscrowState::Released;
+            Storage::save_escrow(&env, &escrow);
+        } else {
+            return Err(Error::InvalidEscrowState);
+        }
+        
+        Ok(())
+    }
+
+    fn add_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let owner = ownable::get_owner(&env).ok_or(Error::Unauthorized)?;
+        ensure(owner == admin, Error::Unauthorized)?;
+        
+        let mut reviewers = Storage::get_reviewers(&env);
+        let mut exists = false;
+        for r in reviewers.iter() {
+            if r == reviewer {
+                exists = true;
+                break;
+            }
+        }
+        if !exists {
+            reviewers.push_back(reviewer);
+            Storage::save_reviewers(&env, &reviewers);
+        }
+        Ok(())
+    }
+
+    fn remove_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let owner = ownable::get_owner(&env).ok_or(Error::Unauthorized)?;
+        ensure(owner == admin, Error::Unauthorized)?;
+        
+        let mut reviewers = Storage::get_reviewers(&env);
+        let mut index = 0;
+        let mut found = false;
+        while index < reviewers.len() {
+            if reviewers.get(index).unwrap() == reviewer {
+                reviewers.remove(index);
+                found = true;
+            } else {
+                index += 1;
+            }
+        }
+        if found {
+            Storage::save_reviewers(&env, &reviewers);
+        }
+        Ok(())
+    }
+
+    fn set_reviewer_threshold(env: Env, admin: Address, threshold: u32) -> Result<(), Error> {
+        admin.require_auth();
+        let owner = ownable::get_owner(&env).ok_or(Error::Unauthorized)?;
+        ensure(owner == admin, Error::Unauthorized)?;
+        ensure(threshold > 0, Error::InvalidPrice)?;
+        
+        InstanceStorage::set_reviewer_threshold(&env, threshold);
+        Ok(())
+    }
+
+    fn get_reviewer_threshold(env: Env) -> u32 {
+        InstanceStorage::get_reviewer_threshold(&env)
+    }
+
+    fn get_reviewers(env: Env) -> Vec<Address> {
+        Storage::get_reviewers(&env)
+    }
+
+    fn get_escrow(env: Env, prompt_id: u64, buyer: Address) -> Result<Escrow, Error> {
+        Storage::require_escrow(&env, prompt_id, &buyer)
+    }
 }
 
 #[default_impl]
@@ -796,31 +1125,34 @@ fn execute_buy(
     ensure(creator_amount >= 0, Error::InvalidSplits)?;
 
     let asset_client = token::StellarAssetClient::new(env, &prompt.asset);
+    asset_client.transfer_from(&this_contract, buyer, &this_contract, &payment_amount_stroops);
 
-    if creator_amount > 0 {
-        asset_client.transfer_from(&this_contract, buyer, &prompt.creator, &creator_amount);
-    }
-
-    if fee_amount > 0 {
-        asset_client.transfer_from(&this_contract, buyer, &fee_wallet, &fee_amount);
-    }
-
-    if let Some(ref r) = referrer {
-        if referral_amount > 0 {
-            asset_client.transfer_from(&this_contract, buyer, r, &referral_amount);
-        }
-    }
-
-    for i in 0..prompt.splits.len() {
-        let split = prompt.splits.get(i).unwrap();
-        let split_amount = payment_amount_stroops
-            .checked_mul(split.bps as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / MAX_BPS as i128;
-        if split_amount > 0 {
-            asset_client.transfer_from(&this_contract, buyer, &split.recipient, &split_amount);
-        }
-    }
+    let dispute_window = 7 * 24 * 60 * 60; // 7 days in seconds
+    let escrow = Escrow {
+        prompt_id,
+        buyer: buyer.clone(),
+        creator: prompt.creator.clone(),
+        asset: prompt.asset.clone(),
+        price: payment_amount_stroops,
+        fee_percentage,
+        fee_wallet: fee_wallet.clone(),
+        referral_percentage,
+        referrer: referrer.clone(),
+        splits: prompt.splits.clone(),
+        content_hash: prompt.content_hash.clone(),
+        created_at: now,
+        dispute_window_expiry: now.checked_add(dispute_window).ok_or(Error::ArithmeticOverflow)?,
+        state: EscrowState::Pending,
+        dispute_opened_at: 0,
+        resolution_deadline: 0,
+        evidence_hashes: Vec::new(env),
+        voters: Vec::new(env),
+        votes_for_refund: 0,
+        votes_for_reject: 0,
+        is_appealed: false,
+        dispute_resolved_at: 0,
+    };
+    Storage::save_escrow(env, &escrow);
 
     prompt.sales_count = prompt
         .sales_count
@@ -835,6 +1167,8 @@ fn execute_buy(
         MAX_ACCESS_EXPIRY,
     );
     InstanceStorage::clear_reentrancy_guard(env);
+
+    Events::emit_escrow_created(env, prompt_id, buyer.clone(), payment_amount_stroops);
 
     Events::emit_prompt_purchased(
         env,
@@ -938,3 +1272,79 @@ fn ensure(condition: bool, error: Error) -> Result<(), Error> {
         Err(error)
     }
 }
+
+fn execute_resolution_transfer(env: &Env, escrow: &mut Escrow, refund: bool) -> Result<(), Error> {
+    ensure(escrow.price > 0, Error::InvalidPrice)?;
+    let transfer_price = escrow.price;
+    escrow.price = 0;
+
+    if refund {
+        let asset_client = token::StellarAssetClient::new(env, &escrow.asset);
+        asset_client.transfer(&env.current_contract_address(), &escrow.buyer, &transfer_price);
+
+        Storage::remove_purchase(env, escrow.prompt_id, &escrow.buyer);
+        Storage::remove_prompt_from_buyer(env, &escrow.buyer, escrow.prompt_id);
+        
+        Events::emit_escrow_refunded(env, escrow.prompt_id, escrow.buyer.clone());
+    } else {
+        // Perform payouts based on snapshotted splits/fees
+        let fee_amount = transfer_price
+            .checked_mul(escrow.fee_percentage as i128)
+            .ok_or(Error::ArithmeticOverflow)?
+            / MAX_BPS as i128;
+
+        let referral_amount = if escrow.referrer.is_some() {
+            transfer_price
+                .checked_mul(escrow.referral_percentage as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / MAX_BPS as i128
+        } else {
+            0
+        };
+
+        let mut split_total: i128 = 0;
+        for split in escrow.splits.iter() {
+            let split_amount = transfer_price
+                .checked_mul(split.bps as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / MAX_BPS as i128;
+            split_total = split_total
+                .checked_add(split_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        let creator_amount = transfer_price
+            .checked_sub(fee_amount)
+            .ok_or(Error::ArithmeticOverflow)?
+            .checked_sub(referral_amount)
+            .ok_or(Error::ArithmeticOverflow)?
+            .checked_sub(split_total)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        let asset_client = token::StellarAssetClient::new(env, &escrow.asset);
+        if creator_amount > 0 {
+            asset_client.transfer(&env.current_contract_address(), &escrow.creator, &creator_amount);
+        }
+        if fee_amount > 0 {
+            asset_client.transfer(&env.current_contract_address(), &escrow.fee_wallet, &fee_amount);
+        }
+        if let Some(ref r) = escrow.referrer {
+            if referral_amount > 0 {
+                asset_client.transfer(&env.current_contract_address(), r, &referral_amount);
+            }
+        }
+        for split in escrow.splits.iter() {
+            let split_amount = transfer_price
+                .checked_mul(split.bps as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / MAX_BPS as i128;
+            if split_amount > 0 {
+                asset_client.transfer(&env.current_contract_address(), &split.recipient, &split_amount);
+            }
+        }
+
+        Events::emit_escrow_released(env, escrow.prompt_id, escrow.buyer.clone());
+    }
+    Ok(())
+}
+
