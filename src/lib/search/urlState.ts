@@ -9,6 +9,8 @@ export interface SearchState {
   selectedTag: string;
   priceRange: [number, number];
   sortBy: string;
+  selectedCreator: string;
+  selectedAvailability: string; // "all" | "active" | "inactive"
 }
 
 export const DEFAULT_SEARCH_STATE: SearchState = {
@@ -17,6 +19,8 @@ export const DEFAULT_SEARCH_STATE: SearchState = {
   selectedTag: "",
   priceRange: [0, 25],
   sortBy: "recent",
+  selectedCreator: "",
+  selectedAvailability: "active",
 };
 
 /**
@@ -36,6 +40,8 @@ export function getSearchStateFromUrl(): Partial<SearchState> {
     priceRange:
       priceMin && priceMax ? [Number(priceMin), Number(priceMax)] : undefined,
     sortBy: params.get("sort") || undefined,
+    selectedCreator: params.get("creator") || undefined,
+    selectedAvailability: params.get("availability") || undefined,
   };
 }
 
@@ -83,6 +89,18 @@ export function updateUrlWithSearchState(state: Partial<SearchState>) {
     params.delete("sort");
   }
 
+  if (state.selectedCreator) {
+    params.set("creator", state.selectedCreator);
+  } else {
+    params.delete("creator");
+  }
+
+  if (state.selectedAvailability && state.selectedAvailability !== "active") {
+    params.set("availability", state.selectedAvailability);
+  } else {
+    params.delete("availability");
+  }
+
   // Update URL without full page reload
   const newUrl = params.toString()
     ? `${window.location.pathname}?${params.toString()}`
@@ -119,6 +137,14 @@ export function buildSearchQueryString(state: Partial<SearchState>): string {
 
   if (state.sortBy && state.sortBy !== "recent") {
     params.set("sort", state.sortBy);
+  }
+
+  if (state.selectedCreator) {
+    params.set("creator", state.selectedCreator);
+  }
+
+  if (state.selectedAvailability && state.selectedAvailability !== "active") {
+    params.set("availability", state.selectedAvailability);
   }
 
   const queryString = params.toString();

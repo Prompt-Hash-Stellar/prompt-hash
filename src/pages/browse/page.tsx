@@ -19,11 +19,15 @@ import {
   updateUrlWithSearchState,
   DEFAULT_SEARCH_STATE,
 } from "@/lib/search/urlState";
+import { useQuery } from "@tanstack/react-query";
+import { browserStellarConfig } from "@/lib/stellar/browserConfig";
+import { getAllPrompts } from "@/lib/stellar/promptHashClient";
 
-const categories = Array.from(
-  new Set(featuredPromptTemplates.map((prompt) => prompt.category)),
+const isMarketplaceConfigured = Boolean(
+  browserStellarConfig.promptHashContractId &&
+  browserStellarConfig.simulationAccount &&
+  browserStellarConfig.rpcUrl,
 );
-const tags = ["AI", "Creative", "Product", "Sales", "Finance", "Support"];
 
 export default function BrowsePage() {
   usePageMeta({
@@ -31,6 +35,26 @@ export default function BrowsePage() {
     description:
       "Explore AI prompts across categories. Buy verified prompt licenses secured on the Stellar blockchain.",
   });
+
+  const promptsQuery = useQuery({
+    queryKey: ["marketplace-prompts"],
+    queryFn: async () => {
+      if (!isMarketplaceConfigured) return [];
+      return getAllPrompts(browserStellarConfig);
+    },
+  });
+
+  const categories = useMemo(() => {
+    const featuredCats = featuredPromptTemplates.map((p) => p.category);
+    const loadedCats = (promptsQuery.data ?? []).map((p) => p.category);
+    return Array.from(new Set([...featuredCats, ...loadedCats]));
+  }, [promptsQuery.data]);
+
+  const tags = useMemo(() => {
+    const defaultTags = ["AI", "Creative", "Product", "Sales", "Finance", "Support"];
+    const loadedTags = (promptsQuery.data ?? []).flatMap((p) => p.tags || []);
+    return Array.from(new Set([...defaultTags, ...loadedTags]));
+  }, [promptsQuery.data]);
 
   // Initialize state from URL or use defaults
   const [priceRange, setPriceRange] = useState<[number, number]>(
@@ -52,6 +76,16 @@ export default function BrowsePage() {
   const [sortBy, setSortBy] = useState(
     () => getSearchStateFromUrl().sortBy || DEFAULT_SEARCH_STATE.sortBy,
   );
+  const [selectedCreator, setSelectedCreator] = useState(
+    () =>
+      getSearchStateFromUrl().selectedCreator ||
+      DEFAULT_SEARCH_STATE.selectedCreator,
+  );
+  const [selectedAvailability, setSelectedAvailability] = useState(
+    () =>
+      getSearchStateFromUrl().selectedAvailability ||
+      DEFAULT_SEARCH_STATE.selectedAvailability,
+  );
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isCompareDrawerOpen, setIsCompareDrawerOpen] = useState(false);
 
@@ -63,8 +97,18 @@ export default function BrowsePage() {
       selectedTag,
       priceRange,
       sortBy,
+      selectedCreator,
+      selectedAvailability,
     });
-  }, [searchQuery, selectedCategory, selectedTag, priceRange, sortBy]);
+  }, [
+    searchQuery,
+    selectedCategory,
+    selectedTag,
+    priceRange,
+    sortBy,
+    selectedCreator,
+    selectedAvailability,
+  ]);
 
   const { selected, addToComparison, removeFromComparison, clearComparison } =
     usePromptComparison();
@@ -76,8 +120,18 @@ export default function BrowsePage() {
     if (searchQuery) count++;
     if (sortBy !== "recent") count++;
     if (priceRange[0] !== 0 || priceRange[1] !== 25) count++;
+    if (selectedCreator) count++;
+    if (selectedAvailability !== "active") count++;
     return count;
-  }, [selectedCategory, selectedTag, searchQuery, sortBy, priceRange]);
+  }, [
+    selectedCategory,
+    selectedTag,
+    searchQuery,
+    sortBy,
+    priceRange,
+    selectedCreator,
+    selectedAvailability,
+  ]);
 
   const handleClearFilters = () => {
     setSearchQuery("");
@@ -85,6 +139,8 @@ export default function BrowsePage() {
     setSelectedTag("");
     setSortBy("recent");
     setPriceRange([0, 25]);
+    setSelectedCreator("");
+    setSelectedAvailability("active");
   };
 
   return (
@@ -156,6 +212,10 @@ export default function BrowsePage() {
                 sortBy={sortBy}
                 setSortBy={setSortBy}
                 onClear={handleClearFilters}
+                selectedCreator={selectedCreator}
+                setSelectedCreator={setSelectedCreator}
+                selectedAvailability={selectedAvailability}
+                setSelectedAvailability={setSelectedAvailability}
               />
             </div>
           </aside>
@@ -195,6 +255,8 @@ export default function BrowsePage() {
               priceRange={priceRange}
               searchQuery={searchQuery}
               sortBy={sortBy}
+              selectedCreator={selectedCreator}
+              selectedAvailability={selectedAvailability}
               comparedIds={selected.map((p) => p.id)}
               onToggleCompare={(prompt) => {
                 const promptIdStr = prompt.id.toString();
@@ -358,6 +420,10 @@ export default function BrowsePage() {
               sortBy={sortBy}
               setSortBy={setSortBy}
               onClear={handleClearFilters}
+              selectedCreator={selectedCreator}
+              setSelectedCreator={setSelectedCreator}
+              selectedAvailability={selectedAvailability}
+              setSelectedAvailability={setSelectedAvailability}
             />
             <Button
               className="mt-10 h-12 w-full bg-emerald-500 font-bold text-slate-950"

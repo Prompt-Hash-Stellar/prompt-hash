@@ -1,6 +1,6 @@
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -24,6 +24,10 @@ export interface MarketplaceFiltersProps {
   sortBy: string;
   setSortBy: (_s: string) => void;
   onClear: () => void;
+  selectedCreator?: string;
+  setSelectedCreator?: (creator: string) => void;
+  selectedAvailability?: string;
+  setSelectedAvailability?: (availability: string) => void;
 }
  
 
@@ -41,10 +45,16 @@ export function MarketplaceFilters({
   sortBy,
   setSortBy,
   onClear,
+  selectedCreator = "",
+  setSelectedCreator,
+  selectedAvailability = "active",
+  setSelectedAvailability,
 }: MarketplaceFiltersProps) {
   const hasActiveFilters =
     Boolean(selectedCategory) ||
     Boolean(selectedTag) ||
+    Boolean(selectedCreator) ||
+    selectedAvailability !== "active" ||
     sortBy !== "recent" ||
     priceRange[0] !== 0 ||
     priceRange[1] !== PRICE_MAX;
@@ -118,6 +128,23 @@ export function MarketplaceFilters({
         </div>
       )}
 
+      {/* Creator Address / Name */}
+      {setSelectedCreator && (
+        <div className="space-y-3">
+          <p className="text-[10px] uppercase tracking-[0.25em] font-bold text-slate-500">
+            Creator Address / Name
+          </p>
+          <Input
+            type="text"
+            placeholder="Search by creator address..."
+            value={selectedCreator || ""}
+            onChange={(e) => setSelectedCreator(e.target.value)}
+            className="border-white/5 bg-white/5 h-11 text-slate-100 placeholder:text-slate-500 focus-visible:ring-emerald-500/30 text-sm"
+            aria-label="Filter by creator address or name"
+          />
+        </div>
+      )}
+
       {/* Price range — two independent range inputs */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
@@ -169,6 +196,28 @@ export function MarketplaceFilters({
           </div>
         </div>
       </div>
+
+      {/* Availability */}
+      {setSelectedAvailability && (
+        <div className="space-y-3">
+          <p className="text-[10px] uppercase tracking-[0.25em] font-bold text-slate-500">
+            Availability
+          </p>
+          <Select
+            value={selectedAvailability || "active"}
+            onValueChange={setSelectedAvailability}
+          >
+            <SelectTrigger className="border-white/5 bg-white/5 h-11 text-slate-100 transition-all hover:bg-white/10 focus:ring-emerald-500/30">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-slate-900 border-white/10 text-slate-100">
+              <SelectItem value="active">On Sale (Active)</SelectItem>
+              <SelectItem value="inactive">Off Sale (Inactive)</SelectItem>
+              <SelectItem value="all">All Listings</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       {/* Sort */}
       <div className="space-y-3">
