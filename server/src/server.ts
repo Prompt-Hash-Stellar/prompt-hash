@@ -11,6 +11,7 @@ import { versioningRouter } from "./routes/versioningRoutes";
 import { governanceRouter } from "./routes/governanceRoutes"; // Issue #113
 import searchRouter from "./routes/searchRoutes";
 import { fulfillmentRouter } from "./routes/fulfillmentRoutes";
+import { reconciliationRouter } from "./routes/reconciliationRoutes";
 import { reviewRouter } from "./routes/reviewRoutes";
 import { runBackup, getBackupHealth } from "./services/backupService";
 import { IndexerState } from "./models/IndexerState";
