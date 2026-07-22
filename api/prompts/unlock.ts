@@ -26,6 +26,7 @@ import { dispatchEvent } from "../../server/src/services/webhookDispatcher";
 import { recordAuditEvent } from "../../server/src/services/auditTrail";
 import { apiError, ErrorCode } from "../../src/lib/api/errorCodes";
 import { validateUnlockSecrets } from "../../src/lib/validation/envValidator";
+import { unlockSchema } from "../../src/lib/validation/apiSchemas";
 
 export interface UnlockRequest {
   token: string;
@@ -116,12 +117,28 @@ async function handler(
     return;
   }
 
-  const clientIp = String(
-    req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown",
-  );
-  const { token, promptId, address, signedMessage }: Partial<UnlockRequest> = req.body ?? {};
+ const validation = unlockSchema.safeParse(req.body);
 
-  const redactedAddress = address ? String(address).slice(0, 8) + "..." : "unknown";
+if (!validation.success) {
+  res.status(400).json(
+    apiError(
+      ErrorCode.MISSING_FIELDS,
+      "Invalid request payload.",
+      {
+        details: validation.error.flatten(),
+      },
+    ),
+  );
+  return;
+}
+
+const { token, promptId, address, signedMessage } = validation.data;
+
+const clientIp = String(
+  req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown",
+);
+
+const redactedAddress = String(address).slice(0, 8) + "...";
 
   // Authenticated bucket: wallet address is present.
   const isAuthenticated = Boolean(address);
@@ -188,15 +205,7 @@ async function handler(
     return;
   }
 
-  if (!token || !promptId || !address || !signedMessage) {
-    res.status(400).json(
-      apiError(
-        ErrorCode.MISSING_FIELDS,
-        "token, promptId, address, and signedMessage are required.",
-      ),
-    );
-    return;
-  }
+  
 
   try {
     // 1. Verify challenge token signature & payload parameters

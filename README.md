@@ -212,14 +212,126 @@ The current contract data model includes:
 - active status
 - sales count
 
-## Installation
+## Quick Start – Frontend‑Only
+
+If you only want to run the React UI (e.g. for UI testing or to preview the
+app without deploying the contract), you can skip the Soroban tooling.
 
 ### Prerequisites
 
-- Node.js 22+
-- Yarn 4+ (Corepack enabled)
-- Rust toolchain
-- Stellar CLI with Soroban support
+* **Node.js 22+** – the project uses the latest LTS features.
+* **Yarn 4+** – Corepack is enabled in the repo, so running `yarn install`
+  will automatically use the correct version.
+* **Optional**: a Stellar testnet wallet and RPC URL if you plan to interact
+  with the contract.
+
+### Setup
+
+```bash
+# 1. Install dependencies
+yarn install
+
+# 2. Copy the example env file and fill in only the public values you
+#    need for the UI.  The UI only requires the contract ID and RPC URL.
+cp .env.example .env
+# Edit .env and set PUBLIC_STELLAR_NETWORK, PUBLIC_STELLAR_RPC_URL, etc.
+
+# 3. Start the dev server
+yarn dev
+```
+
+The UI will be available at `http://localhost:5173`.
+
+---
+
+## Full Stack – Contract + Frontend + Unlock Service
+
+When you want to run the entire stack locally (including contract tests and
+the unlock service), follow the steps below.
+
+### Prerequisites
+
+* **Node.js 22+**
+* **Yarn 4+**
+* **Rust toolchain** – required for compiling the Soroban contract.
+* **Stellar CLI** with Soroban support – used for contract deployment and
+  testing.
+* **A Stellar testnet account** with a funded wallet and the corresponding
+  secret key.
+* **A local RPC endpoint** (e.g. `https://rpc.testnet.stellar.org`).
+* **Optional**: a local keypair for the unlock service (you can generate one
+  with `stellar-keypair generate`).
+
+### Setup
+
+```bash
+# 1. Install all dependencies (frontend + server)
+yarn install
+cd server && npm install && cd ..
+
+# 2. Copy and edit environment files
+cp .env.example .env
+cp server/.env.example server/.env
+# Edit the files and provide the required Stellar and unlock service values.
+
+# 3. Build the Soroban contract
+cargo build --release -p prompt-hash
+
+# 4. Run contract tests
+cargo test -p prompt-hash
+
+# 5. Start the unlock service (Vercel functions are local via `vercel dev`)
+vercel dev
+
+# 6. Start the Express indexer (optional, read‑only)
+cd server && npm run dev
+
+# 7. Start the frontend
+yarn dev
+```
+
+### Common Commands
+
+| Command | Description |
+|---------|-------------|
+| `yarn lint` | Run ESLint on the frontend code |
+| `yarn test:frontend` | Run the frontend test suite |
+| `cargo test -p prompt-hash` | Run the contract tests |
+| `yarn check:setup` | One‑command sanity check for all prerequisites |
+
+---
+
+## Environment Variables
+
+The repository ships with two example files:
+
+* `./.env.example` – public variables used by the frontend.
+* `./server/.env.example` – private variables for the unlock service and
+  optional Express server.
+
+Only the **public** variables are required for the UI to function.  The
+private variables should never be committed to the repo.  When running
+locally, copy the example files and fill in the values.
+
+---
+
+## Documentation
+
+For a deeper dive into the architecture, contract design, and deployment
+process, see the following docs:
+
+* [Architecture Overview](docs/architecture.md)
+* [Contract Design](docs/stellar-configuration.md)
+* [Environment Setup](docs/environments.md)
+* [Contribution Guide](CONTRIBUTING.md)
+
+---
+
+## Contributing
+
+Please refer to the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines on
+testing, linting, and submitting pull requests.
+
 
 ### Install dependencies
 
