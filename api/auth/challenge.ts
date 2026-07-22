@@ -6,6 +6,7 @@ import { metrics } from "../../src/lib/observability/metrics";
 import { recordAuditEvent } from "../../server/src/services/auditTrail";
 import { apiError, ErrorCode } from "../../src/lib/api/errorCodes";
 import { isPlaceholder } from "../../src/lib/validation/envValidator";
+import { challengeSchema } from "../../src/lib/validation/apiSchemas";
 
 type ExtendedRequest = VercelRequest & {
   logger: {
@@ -33,7 +34,9 @@ export interface ChallengeResponse {
 (function validateEnv(): void {
   const secret = process.env.CHALLENGE_TOKEN_SECRET;
   if (!secret || isPlaceholder(secret) || secret.length < 16) {
-    console.error("FATAL: CHALLENGE_TOKEN_SECRET is missing, placeholder, or too short (< 16 chars).");
+    console.error(
+      "FATAL: CHALLENGE_TOKEN_SECRET is missing, placeholder, or too short (< 16 chars).",
+    );
     if (process.env.NODE_ENV === "production") {
       throw new Error("CHALLENGE_TOKEN_SECRET not configured.");
     }
@@ -45,22 +48,42 @@ async function handler(
   res: VercelResponse,
 ): Promise<void> {
   if (req.method !== "POST") {
-    res.status(405).json(apiError(ErrorCode.METHOD_NOT_ALLOWED, "Method not allowed."));
+    res
+      .status(405)
+      .json(apiError(ErrorCode.METHOD_NOT_ALLOWED, "Method not allowed."));
     return;
   }
+
+  const validation = challengeSchema.safeParse(req.body);
+
+  if (!validation.success) {
+  res.status(400).json(
+    apiError(
+      ErrorCode.MISSING_FIELDS,
+      "Invalid request payload.",
+    ),
+  );
+  return;
+}
+
+  const { address, promptId } = validation.data;
 
   const clientIp = String(
     req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown",
   );
-  const { address, promptId }: Partial<ChallengeRequest> = req.body ?? {};
 
   const isAuthenticated = Boolean(address);
 
-  const rateLimit = await checkRateLimit("challenge", clientIp, isAuthenticated);
+  const rateLimit = await checkRateLimit(
+    "challenge",
+    clientIp,
+    isAuthenticated,
+  );
 
   if (!rateLimit.success) {
     req.logger.warn({ clientIp }, "Rate limit exceeded for challenge issuance");
     metrics.trackRateLimitHit("challenge", clientIp);
+
     void recordAuditEvent({
       action: "challenge_rate_limited",
       result: "blocked",
@@ -70,13 +93,19 @@ async function handler(
       clientIp,
       reason: "rate_limit_exceeded",
     });
+
     res.setHeader("X-RateLimit-Limit", rateLimit.limit);
     res.setHeader("X-RateLimit-Remaining", 0);
     res.setHeader("X-RateLimit-Reset", rateLimit.reset);
+
     res.status(429).json(
-      apiError(ErrorCode.RATE_LIMIT_IP, "Too many requests. Please try again later.", {
-        reset: rateLimit.reset,
-      }),
+      apiError(
+        ErrorCode.RATE_LIMIT_IP,
+        "Too many requests. Please try again later.",
+        {
+          reset: rateLimit.reset,
+        },
+      ),
     );
     return;
   }
@@ -86,23 +115,25 @@ async function handler(
   res.setHeader("X-RateLimit-Reset", rateLimit.reset);
 
   const secret = process.env.CHALLENGE_TOKEN_SECRET;
+
   if (!secret || isPlaceholder(secret) || secret.length < 16) {
     req.logger.error("CHALLENGE_TOKEN_SECRET is not configured correctly.");
-    res.status(500).json(apiError(ErrorCode.CONFIGURATION_ERROR, "Configuration error."));
+    res
+      .status(500)
+      .json(apiError(ErrorCode.CONFIGURATION_ERROR, "Configuration error."));
     return;
   }
 
-  if (!address || !promptId) {
-    res.status(400).json(
-      apiError(ErrorCode.MISSING_FIELDS, "address and promptId are required."),
-    );
-    return;
-  }
-
-  // Issue a strictly time-bound challenge (default TTL = 5 minutes, max 10 minutes).
   const MAX_TTL_MS = 10 * 60 * 1000;
   const ttlMs = Math.min(5 * 60 * 1000, MAX_TTL_MS);
-  const challenge = createChallengeToken(secret, String(address), String(promptId), Date.now(), ttlMs);
+
+  const challenge = createChallengeToken(
+    secret,
+    String(address),
+    String(promptId),
+    Date.now(),
+    ttlMs,
+  );
 
   const response: ChallengeResponse = {
     token: challenge.token,
@@ -113,9 +144,13 @@ async function handler(
   };
 
   metrics.trackChallengeIssued(String(address), String(promptId));
-  // Redact wallet address in log to prevent address harvesting from log aggregators
+
   const redactedAddress = String(address).slice(0, 8) + "...";
-  req.logger.info({ address: redactedAddress, promptId: String(promptId) }, "Challenge token issued successfully");
+
+  req.logger.info(
+    { address: redactedAddress, promptId: String(promptId) },
+    "Challenge token issued successfully",
+  );
 
   void recordAuditEvent({
     action: "challenge_issued",
