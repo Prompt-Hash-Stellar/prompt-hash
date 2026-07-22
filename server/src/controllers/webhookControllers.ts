@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { randomBytes } from "crypto";
 import connectDb from "../db/connectDb";
 import WebhookSubscription from "../models/WebhookSubscription";
+import { ALLOWED_EVENTS } from "../services/webhookDispatcher";
 
 export const RegisterWebhook = async (req: Request, res: Response): Promise<Response> => {
   try {
@@ -19,9 +20,8 @@ export const RegisterWebhook = async (req: Request, res: Response): Promise<Resp
     }
 
     const secret = randomBytes(32).toString("hex");
-    const allowedEvents = ["PromptPurchased"];
     const resolvedEvents = Array.isArray(events)
-      ? events.filter((e: string) => allowedEvents.includes(e))
+      ? events.filter((e: string) => ALLOWED_EVENTS.includes(e as any))
       : ["PromptPurchased"];
 
     const existing = await WebhookSubscription.findOne({
