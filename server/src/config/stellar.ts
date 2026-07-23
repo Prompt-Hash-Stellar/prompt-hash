@@ -23,5 +23,3 @@ export function loadStellarConfig(source: NodeJS.ProcessEnv = process.env): Stel
   }
   return Object.freeze(parsed.data);
 }
-
-export const stellarConfig = loadStellarConfig();

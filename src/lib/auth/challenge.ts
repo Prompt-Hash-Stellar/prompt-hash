@@ -124,11 +124,11 @@ export function verifyChallengeToken(
   }
 
   if (payload.address.toLowerCase() !== address.toLowerCase()) {
-    throw new Error("Challenge token wallet address mismatch.");
+    throw new Error("Challenge token wallet address does not match (mismatch).");
   }
 
   if (String(payload.promptId) !== String(promptId)) {
-    throw new Error("Challenge token prompt ID mismatch.");
+    throw new Error("Challenge token prompt ID does not match (mismatch).");
   }
 
   if (payload.expiresAt < now) {
