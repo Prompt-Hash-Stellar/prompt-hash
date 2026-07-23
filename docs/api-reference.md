@@ -242,3 +242,153 @@ Verifies the wallet signature and on-chain entitlement before returning decrypte
 - Category casing is canonicalized so the frontend can send user-friendly values.
 - The buyer dashboard reads from `/api/prompts/buyer/:walletAddress/saved` and `/api/prompts/buyer/:walletAddress/owned` to populate separate library sections.
 - Save and unsave actions are intentionally idempotent from the UI perspective.
+
+---
+
+## Webhooks
+
+PromptHash delivers real-time event notifications via webhooks. Each subscription is tied to a creator wallet and receives signed JSON payloads when marketplace events occur.
+
+### Supported Events
+
+| Event | Description |
+|-------|-------------|
+| `PromptPurchased` | A buyer purchased a license for a prompt |
+| `PromptCreated` | A new prompt was created and listed |
+| `LicenseTransferred` | A license was transferred between wallets |
+| `ReviewSubmitted` | A buyer submitted a review for a prompt |
+
+### Register a webhook
+
+`POST /api/webhooks`
+
+Request body:
+
+```json
+{
+  "walletAddress": "G...",
+  "url": "https://your-server.com/webhooks",
+  "events": ["PromptPurchased", "PromptCreated"]
+}
+```
+
+The `events` array is optional — defaults to `["PromptPurchased"]`. Only events in the supported list are accepted; unknown events are silently filtered.
+
+Example response (201):
+
+```json
+{
+  "message": "Webhook registered.",
+  "id": "6650f1...",
+  "secret": "a1b2c3d4..."
+}
+```
+
+**Important:** The `secret` is returned only on creation. Store it securely — you need it to verify signatures.
+
+### Get webhook subscription
+
+`GET /api/webhooks?walletAddress=G...`
+
+Returns the subscription (secret excluded from response).
+
+### Delete webhook subscription
+
+`DELETE /api/webhooks`
+
+Request body:
+
+```json
+{
+  "walletAddress": "G..."
+}
+```
+
+### Webhook payload format
+
+```json
+{
+  "event": "PromptPurchased",
+  "deliveryId": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": "2026-07-20T12:00:00.000Z",
+  "data": {
+    "promptId": "42",
+    "buyer": "G...",
+    "title": "Launch Strategy Pack"
+  }
+}
+```
+
+### Request headers
+
+| Header | Description |
+|--------|-------------|
+| `X-PromptHash-Signature` | HMAC-SHA256 signature: `sha256=<hex-digest>` |
+| `X-PromptHash-Delivery` | Unique delivery ID (UUID) for idempotency |
+| `X-PromptHash-Event` | Event type name |
+| `X-PromptHash-Timestamp` | ISO 8601 timestamp of event creation |
+
+### Signature verification
+
+Verify the webhook payload using your stored secret:
+
+```typescript
+import { createHmac } from "crypto";
+
+function verifyWebhookSignature(
+  secret: string,
+  body: string,
+  signature: string,
+): boolean {
+  const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  if (expected.length !== signature.length) return false;
+  let result = 0;
+  for (let i = 0; i < expected.length; i++) {
+    result |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  }
+  return result === 0;
+}
+```
+
+Usage in an Express handler:
+
+```typescript
+app.post("/webhooks", (req, res) => {
+  const signature = req.headers["x-prompthash-signature"];
+  const body = JSON.stringify(req.body);
+
+  if (!verifyWebhookSignature(YOUR_SECRET, body, signature)) {
+    return res.status(401).json({ error: "Invalid signature" });
+  }
+
+  const deliveryId = req.headers["x-prompthash-delivery"];
+  // Use deliveryId for idempotency — skip if already processed
+
+  // Process the event...
+  res.status(200).json({ received: true });
+});
+```
+
+### Idempotency
+
+Each delivery has a unique `deliveryId` (UUID) sent in the `X-PromptHash-Delivery` header. Your handler should:
+
+1. Check if the `deliveryId` has been processed before
+2. If yes, return 200 immediately (duplicate delivery)
+3. If no, process the event and record the `deliveryId`
+
+This is critical because PromptHash retries failed deliveries, which may result in duplicate HTTP requests.
+
+### Retry behavior
+
+- Failed deliveries (5xx errors, network timeouts, 429 rate limits) are retried up to 3 times
+- Retries use exponential backoff: 2s, 4s, 8s
+- 4xx errors (except 429) are treated as permanent failures — no retry
+- After 10 consecutive failures, the subscription is automatically disabled
+- All delivery attempts are logged in the `WebhookDeliveryLog` collection
+
+### Rate limiting
+
+Webhook endpoints should handle bursts gracefully. We recommend:
+- Return 200 quickly and process asynchronously
+- Use 429 with `Retry-After` header if your system is overloaded

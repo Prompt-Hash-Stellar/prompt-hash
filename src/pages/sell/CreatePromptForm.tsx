@@ -81,6 +81,10 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
   const [isFirstListing] = useState(true);
   const [descriptionTab, setDescriptionTab] = useState<"write" | "preview">("write");
 
+  const [draftCheckCompleted, setDraftCheckCompleted] = useState(false);
+  const [hasDraftToRestore, setHasDraftToRestore] = useState(false);
+  const [draftData, setDraftData] = useState<any>(null);
+
   const {
     register,
     handleSubmit,
@@ -142,8 +146,23 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
     [coCreatorsList],
   );
 
+  const isFormEmpty = (data: any) => {
+    return (
+      !data.imageUrl &&
+      !data.title &&
+      !data.category &&
+      !data.previewText &&
+      !data.description &&
+      (!data.priceXlm || data.priceXlm === "2") &&
+      (!data.coCreators || data.coCreators.length === 0)
+    );
+  };
+
+  // Load draft check on mount / storage key change
   useEffect(() => {
-    draftLoadRef.current = null;
+    setDraftCheckCompleted(false);
+    setHasDraftToRestore(false);
+    setDraftData(null);
     setDraftRestored(false);
     setLastSavedAt(null);
 
@@ -151,27 +170,129 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
       return;
     }
 
-    const rawDraft = window.localStorage.getItem(draftStorageKey);
-    if (!rawDraft) {
-      draftLoadRef.current = draftStorageKey;
+    const rawDraft = typeof window !== "undefined" && window.localStorage?.getItem
+      ? window.localStorage.getItem(draftStorageKey)
+      : null;
+
+    if (rawDraft) {
+      try {
+        const parsed = JSON.parse(rawDraft);
+        if (parsed && parsed.formData) {
+          setDraftData(parsed);
+          setHasDraftToRestore(true);
+        } else {
+          setDraftCheckCompleted(true);
+        }
+      } catch {
+        if (typeof window !== "undefined" && window.localStorage?.removeItem) {
+          window.localStorage.removeItem(draftStorageKey);
+        }
+        setDraftCheckCompleted(true);
+      }
+    } else {
+      setDraftCheckCompleted(true);
+    }
+  }, [draftStorageKey]);
+
+  // Autosave effect with debounce
+  useEffect(() => {
+    if (!draftStorageKey || !draftCheckCompleted || hasDraftToRestore) {
       return;
     }
 
-    try {
-      const parsed = JSON.parse(rawDraft);
-      if (parsed.formData) {
-        Object.keys(parsed.formData).forEach((key) => {
-          setValue(key, parsed.formData[key]);
-        });
-        setDraftRestored(true);
-        setLastSavedAt(parsed.savedAt ?? null);
+    const handler = setTimeout(() => {
+      const dataToSave = {
+        imageUrl: watchAllFields.imageUrl,
+        title: watchAllFields.title,
+        category: watchAllFields.category,
+        previewText: watchAllFields.previewText,
+        description: watchAllFields.description,
+        priceXlm: watchAllFields.priceXlm,
+        coCreators: watchAllFields.coCreators,
+      };
+
+      if (isFormEmpty(dataToSave)) {
+        if (typeof window !== "undefined" && window.localStorage?.removeItem) {
+          window.localStorage.removeItem(draftStorageKey);
+        }
+        setLastSavedAt(null);
+      } else {
+        const savedAt = new Date().toISOString();
+        if (typeof window !== "undefined" && window.localStorage?.setItem) {
+          window.localStorage.setItem(
+            draftStorageKey,
+            JSON.stringify({
+              formData: dataToSave,
+              savedAt,
+            }),
+          );
+        }
+        setLastSavedAt(savedAt);
+        setDraftRestored(false);
       }
-    } catch {
+    }, 1000);
+
+    return () => clearTimeout(handler);
+  }, [
+    draftStorageKey,
+    draftCheckCompleted,
+    hasDraftToRestore,
+    watchAllFields.imageUrl,
+    watchAllFields.title,
+    watchAllFields.category,
+    watchAllFields.previewText,
+    watchAllFields.description,
+    watchAllFields.priceXlm,
+    JSON.stringify(watchAllFields.coCreators),
+  ]);
+
+  const handleRestoreDraft = () => {
+    if (!draftData || !draftData.formData) return;
+
+    const fieldsToRestore = [
+      "imageUrl",
+      "title",
+      "category",
+      "previewText",
+      "description",
+      "priceXlm",
+      "coCreators",
+    ];
+
+    fieldsToRestore.forEach((key) => {
+      if (draftData.formData[key] !== undefined) {
+        setValue(key, draftData.formData[key]);
+      }
+    });
+
+    setDraftRestored(true);
+    setLastSavedAt(draftData.savedAt ?? null);
+    setHasDraftToRestore(false);
+    setDraftCheckCompleted(true);
+  };
+
+  const handleDiscardDraft = () => {
+    if (draftStorageKey && typeof window !== "undefined" && window.localStorage?.removeItem) {
       window.localStorage.removeItem(draftStorageKey);
-    } finally {
-      draftLoadRef.current = draftStorageKey;
     }
-  }, [draftStorageKey, setValue]);
+
+    if (draftRestored || hasDraftToRestore) {
+      setValue("imageUrl", "");
+      setValue("title", "");
+      setValue("category", "");
+      setValue("previewText", "");
+      setValue("description", "");
+      setValue("priceXlm", "2");
+      setValue("coCreators", []);
+      setValue("fullPrompt", "");
+    }
+
+    setHasDraftToRestore(false);
+    setDraftRestored(false);
+    setLastSavedAt(null);
+    setDraftData(null);
+    setDraftCheckCompleted(true);
+  };
 
   const onSubmit = async (data: FormData) => {
     setSubmitError(null);
@@ -215,7 +336,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
         },
       );
 
-      if (draftStorageKey) {
+      if (draftStorageKey && typeof window !== "undefined" && window.localStorage?.removeItem) {
         window.localStorage.removeItem(draftStorageKey);
       }
 
@@ -246,7 +367,38 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
           </div>
         )}
 
-        {(draftRestored || lastSavedAt) && isConfigured && (
+        {hasDraftToRestore && draftData && isConfigured && (
+          <div className="flex flex-col gap-3 rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-4 text-xs text-cyan-100 mb-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+              <span>
+                We found a saved draft from{" "}
+                {draftData.savedAt ? new Date(draftData.savedAt).toLocaleString() : "previous session"}.
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 bg-cyan-400 text-slate-950 hover:bg-cyan-300 px-3 py-1"
+                onClick={handleRestoreDraft}
+              >
+                Restore Draft
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 border-cyan-400/30 text-cyan-200 hover:bg-cyan-400/10 hover:text-cyan-50 px-3 py-1 bg-transparent"
+                onClick={handleDiscardDraft}
+              >
+                Discard
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {!hasDraftToRestore && (draftRestored || lastSavedAt) && isConfigured && (
           <div className="flex items-center gap-2 rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-2.5 text-xs text-cyan-100 mb-4">
             {draftRestored ? (
               <>
@@ -262,6 +414,7 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
             <button
               type="button"
               className="ml-auto text-xs text-cyan-200 underline underline-offset-2 hover:text-cyan-50"
+              onClick={handleDiscardDraft}
             >
               Discard
             </button>

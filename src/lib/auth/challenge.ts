@@ -129,6 +129,11 @@ export function verifyChallengeToken(
 
   if (String(payload.promptId) !== String(promptId)) {
     throw new Error("Challenge token prompt ID does not match (mismatch).");
+    throw new Error("Challenge token wallet address mismatch (does not match).");
+  }
+
+  if (String(payload.promptId) !== String(promptId)) {
+    throw new Error("Challenge token prompt ID mismatch (does not match).");
   }
 
   if (payload.expiresAt < now) {

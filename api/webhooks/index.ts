@@ -1,6 +1,7 @@
 import { withObservability } from "../../src/lib/observability/wrapper";
 import connectDb from "../../server/src/db/connectDb";
 import WebhookSubscription from "../../server/src/models/WebhookSubscription";
+import { ALLOWED_EVENTS } from "../../server/src/services/webhookDispatcher";
 import { randomBytes } from "crypto";
 
 async function handler(req: any, res: any) {
@@ -37,9 +38,8 @@ async function handler(req: any, res: any) {
     }
 
     const secret = randomBytes(32).toString("hex");
-    const allowedEvents = ["PromptPurchased"];
     const resolvedEvents = Array.isArray(events)
-      ? events.filter((e: string) => allowedEvents.includes(e))
+      ? events.filter((e: string) => ALLOWED_EVENTS.includes(e as any))
       : ["PromptPurchased"];
 
     const existing = await WebhookSubscription.findOne({
