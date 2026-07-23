@@ -1,3 +1,4 @@
+import { describe, expect, it } from "@jest/globals";
 process.env.PUBLIC_STELLAR_NETWORK = "TESTNET";
 process.env.PUBLIC_STELLAR_NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 process.env.PUBLIC_STELLAR_RPC_URL = "https://soroban-testnet.stellar.org";

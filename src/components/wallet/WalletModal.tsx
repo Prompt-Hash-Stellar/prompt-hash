@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, X, ExternalLink, CheckCircle2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Loader2, X, ExternalLink } from "lucide-react";
 import { useWallet } from "@/hooks/useWallet";
 
 interface WalletOption {
@@ -55,7 +54,7 @@ const E2E_WALLET: WalletOption = {
   id: "e2e-mock",
   name: "E2E Mock Wallet",
   icon: "🧪",
-  description: "Deterministic local wallet for browser tests",
+  descriptionKey: "wallet.modal.wallets.e2e_mock",
 };
 
 interface WalletModalProps {
