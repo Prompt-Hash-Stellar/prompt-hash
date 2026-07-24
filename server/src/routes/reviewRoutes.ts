@@ -1,9 +1,14 @@
 import express, { Request, Response } from "express";
 import connectDb from "../db/connectDb";
 import Review from "../models/Review";
-import Purchase from "../models/Purchase";
 import { cacheDel } from "../services/cacheService";
 import { CACHE_KEYS } from "../services/cacheService";
+import {
+  submitReview,
+  editReview,
+  deleteReview,
+  ReputationError,
+} from "../services/reputationService";
 
 export const reviewRouter = express.Router();
 
@@ -27,34 +32,85 @@ reviewRouter.post("/submit", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "rating must be an integer between 1 and 5" });
     }
 
-    // Verify ownership — buyer must have a purchase record for this prompt
-    const purchase = await Purchase.findOne({
+    const { review, flagCodes } = await submitReview({
       promptId,
-      buyerWallet: userAddress.toLowerCase(),
+      reviewerWallet: userAddress,
+      rating,
+      text,
     });
 
-    if (!purchase) {
-      return res.status(403).json({
-        error: "You must own this prompt before leaving a review",
-      });
-    }
-
-    const review = await Review.findOneAndUpdate(
-      { promptId, userAddress: userAddress.toLowerCase() },
-      { rating, text: text ?? "", verified: true },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    );
-
-    // Invalidate cached detail for this prompt so ratings refresh
     await cacheDel(CACHE_KEYS.promptDetail(promptId));
 
     return res.json({
       success: true,
       review: { id: review._id, rating: review.rating, createdAt: review.createdAt },
+      flagCodes,
     });
   } catch (err) {
+    if (err instanceof ReputationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
     console.error("Review submit error:", err);
     return res.status(500).json({ error: "Failed to submit review" });
+  }
+});
+
+// PUT /api/reviews/:reviewId — edit an existing review (creates a new
+// reputation snapshot rather than silently rewriting past ones, #109).
+reviewRouter.put("/:reviewId", async (req: Request, res: Response) => {
+  try {
+    await connectDb();
+
+    const { reviewId } = req.params;
+    const { userAddress, rating, text } = req.body as {
+      userAddress?: string;
+      rating?: number;
+      text?: string;
+    };
+
+    if (!userAddress || !rating) {
+      return res.status(400).json({ error: "userAddress and rating are required" });
+    }
+    if (rating < 1 || rating > 5 || !Number.isInteger(rating)) {
+      return res.status(400).json({ error: "rating must be an integer between 1 and 5" });
+    }
+
+    const { review } = await editReview({ reviewId, reviewerWallet: userAddress, rating, text });
+
+    await cacheDel(CACHE_KEYS.promptDetail(review.promptId));
+
+    return res.json({ success: true, review: { id: review._id, rating: review.rating, status: review.status } });
+  } catch (err) {
+    if (err instanceof ReputationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+    console.error("Review edit error:", err);
+    return res.status(500).json({ error: "Failed to edit review" });
+  }
+});
+
+// DELETE /api/reviews/:reviewId — soft delete (audit trail preserved, #109)
+reviewRouter.delete("/:reviewId", async (req: Request, res: Response) => {
+  try {
+    await connectDb();
+
+    const { reviewId } = req.params;
+    const { userAddress } = req.body as { userAddress?: string };
+    if (!userAddress) {
+      return res.status(400).json({ error: "userAddress is required" });
+    }
+
+    const { review } = await deleteReview({ reviewId, reviewerWallet: userAddress });
+
+    await cacheDel(CACHE_KEYS.promptDetail(review.promptId));
+
+    return res.json({ success: true, review: { id: review._id, status: review.status } });
+  } catch (err) {
+    if (err instanceof ReputationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+    console.error("Review delete error:", err);
+    return res.status(500).json({ error: "Failed to delete review" });
   }
 });
 
@@ -66,7 +122,9 @@ reviewRouter.get("/list", async (req: Request, res: Response) => {
     const { promptId } = req.query as { promptId?: string };
     if (!promptId) return res.status(400).json({ error: "promptId is required" });
 
-    const reviews = await Review.find({ promptId }).sort({ createdAt: -1 }).lean();
+    const reviews = await Review.find({ promptId, status: { $ne: "deleted" } })
+      .sort({ createdAt: -1 })
+      .lean();
 
     const distribution: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
     let sum = 0;
@@ -90,6 +148,7 @@ reviewRouter.get("/list", async (req: Request, res: Response) => {
         text: r.text,
         createdAt: new Date(r.createdAt as Date).getTime(),
         verified: r.verified,
+        status: r.status,
       })),
       stats,
     });

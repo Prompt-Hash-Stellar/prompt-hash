@@ -26,6 +26,25 @@ const purchaseSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+    // Anti-abuse / reputation eligibility fields (#109).
+    // Refund status is tracked by FulfillmentRecord.status === "refunded" —
+    // reputation eligibility reads that as the source of truth.
+    fraudConfirmed: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    fraudConfirmedAt: {
+      type: Date,
+      default: null,
+    },
+    // Optional privacy-conscious clustering key (e.g. hash of the funding
+    // source account). Never a raw address — only ever compared for equality.
+    fundingSourceHash: {
+      type: String,
+      default: "",
+      index: true,
+    },
   },
   { timestamps: true },
 );

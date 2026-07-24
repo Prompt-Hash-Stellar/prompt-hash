@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import FulfillmentRecord, {
   FulfillmentStatus,
 } from "../models/FulfillmentRecord";
+import { invalidateReviewForRefund } from "../services/reputationService";
 
 export const fulfillmentRouter = Router();
 
@@ -165,6 +166,12 @@ fulfillmentRouter.post(
       at: new Date(),
     });
     await record.save();
+
+    // A refund invalidates any review tied to this purchase through a new
+    // auditable reputation snapshot rather than silently rewriting it (#109).
+    if (refund) {
+      await invalidateReviewForRefund(promptId, buyerWallet);
+    }
 
     res.json(record);
   },
