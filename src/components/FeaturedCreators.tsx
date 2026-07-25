@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { ArrowUpRight, Star, Users } from "lucide-react";
+import { OptimizedImage } from "@/components/ui/OptimizedImage";
 
 interface FeaturedCreator {
   address: string;
@@ -51,10 +52,15 @@ function CreatorCard({ creator }: { creator: FeaturedCreator }) {
       <div className="flex items-center gap-3 mb-4">
         <div className="h-12 w-12 shrink-0 overflow-hidden rounded-full border border-white/10 bg-slate-800">
           {creator.avatarUrl ? (
-            <img
+            <OptimizedImage
               src={creator.avatarUrl}
               alt={creator.displayName}
-              className="h-full w-full object-cover"
+              width={48}
+              height={48}
+              loading="lazy"
+              className="object-cover"
+              wrapperClassName="h-full w-full"
+              aspectRatio="1"
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center text-lg font-bold text-slate-300">

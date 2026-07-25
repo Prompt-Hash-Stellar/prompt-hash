@@ -6,6 +6,7 @@ import { Badge } from "./ui/badge";
 // import Link from "next/link";
 import { StarIcon, X, EyeIcon } from "lucide-react";
 import { PromptPlayground } from "./prompt-playground";
+import { OptimizedImage } from "./ui/OptimizedImage";
 
 const trendingPrompts = [
   {
@@ -80,10 +81,13 @@ function PromptModal({ prompt, onClose }) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="flex flex-col">
             <h2 className="text-2xl font-bold mb-4">{prompt.title}</h2>
-            <img
-              src={prompt.image || "/placeholder.svg"}
+            <OptimizedImage
+              src={prompt.image}
               alt={prompt.title}
-              className="w-full h-auto object-cover rounded-lg mb-4"
+              aspectRatio="3/2"
+              loading="eager"
+              wrapperClassName="w-full"
+              className="w-full"
             />
             <p className="mb-4 text-gray-300 text-sm">{prompt.description}</p>
             <div className="flex items-center justify-between mt-auto pt-4">
@@ -127,11 +131,14 @@ export function TrendingPrompts() {
                 key={prompt.id}
                 className="bg-gray-900 border-gray-800 overflow-hidden group hover:border-purple-500 transition-all"
               >
-                <div className="aspect-[3/2] relative overflow-hidden">
-                  <img
-                    src={prompt.image || "/placeholder.svg"}
+                <div className="aspect-[3/2] relative">
+                  <OptimizedImage
+                    src={prompt.image}
                     alt={prompt.title}
-                    className="object-cover w-full h-full transition-transform group-hover:scale-105"
+                    aspectRatio="3/2"
+                    loading="lazy"
+                    wrapperClassName="w-full"
+                    className="transition-transform group-hover:scale-105"
                   />
                   <Badge className="absolute top-2 right-2 bg-black/60 text-white">
                     {prompt.category}
