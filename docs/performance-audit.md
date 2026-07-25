@@ -55,11 +55,29 @@ The `<Marketplace>` page renders all items into the DOM simultaneously. With 50+
 
 ### 4. Images — no lazy loading or size hints
 **Severity:** Low  
-**Affected scope:** `marketplace_load`, `browse_load`
+**Affected scope:** `marketplace_load`, `browse_load`  
+**Status:** ✅ Resolved
 
-Prompt cover images and creator avatars are rendered with plain `<img>` tags without `loading="lazy"` or explicit `width`/`height` attributes, causing cumulative layout shift (CLS) during load.
+Prompt cover images and creator avatars were rendered with plain `<img>` tags without `loading="lazy"` or explicit `width`/`height` attributes, causing cumulative layout shift (CLS) during load.
 
-**Recommendation:** Add `loading="lazy"` and explicit dimensions, or migrate to a Next.js `<Image>` equivalent (if the SPA is ever wrapped in Next.js) or a Vite image plugin.
+**Resolution:** Introduced `src/components/ui/OptimizedImage.tsx` — a reusable component that:
+- Reserves space via `aspect-ratio` CSS before the image loads, eliminating CLS.
+- Defaults to `loading="lazy"` for all below-the-fold images.
+- Uses `loading="eager"` for above-the-fold/LCP images (e.g., modal hero images).
+- Renders an inline SVG fallback when the URL is empty or the fetch fails.
+- Fades the image in smoothly on load (opacity transition).
+- Wraps images in a skeleton placeholder during the loading phase.
+
+**Files updated:**
+- `src/components/ui/OptimizedImage.tsx` — new reusable component
+- `src/pages/browse/PromptCard.tsx` — card cover images
+- `src/components/FeaturedCreators.tsx` — avatar images
+- `src/components/featured-prompts.jsx` — card and modal hero images
+- `src/components/trending-prompts.jsx` — card and modal images
+- `src/components/popular-creators.jsx` — avatar images
+- `src/components/category-showcase.jsx` — category tile images
+
+Additionally, `PromptCard` is now wrapped in `React.memo` to prevent unnecessary re-renders when parent components update but prompt data is unchanged.
 
 ---
 
