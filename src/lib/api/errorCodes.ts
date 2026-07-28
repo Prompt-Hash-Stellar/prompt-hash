@@ -63,6 +63,8 @@ export interface ApiErrorResponse {
   code: ErrorCode;
   /** ISO timestamp of when the rate limit resets (only present on 429). */
   reset?: number;
+  /** Safe correlation support reference ID. */
+  requestId?: string;
 }
 
 /**
