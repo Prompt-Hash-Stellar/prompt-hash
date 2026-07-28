@@ -1,8 +1,8 @@
 use super::events::Events;
 use super::storage::{InstanceStorage, Storage};
 use super::types::{
-    DataKey, DisputeReason, DisputeStatus, Error, ListingConfig, ListingRevisionRecord, Prompt,
-    PromptHashTrait, PurchaseDispute, Split, Escrow, EscrowState,
+    DataKey, DisputeReason, DisputeStatus, Error, FeePolicy, ListingConfig, ListingRevisionRecord,
+    Prompt, PromptHashTrait, PurchaseDispute, PurchasePreview, Split, Escrow, EscrowState,
 };
 use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
@@ -24,6 +24,10 @@ const MAX_ACCESS_EXPIRY: u64 = u64::MAX;
 const MAX_SPLITS: u32 = 10;
 const MAX_TAGS: u32 = 8;
 const MAX_TAG_LEN: u32 = 32;
+/// Delay between proposing a fee/referral change and it becoming activatable
+/// (#82). Reuses the same 3-day duration already established elsewhere in
+/// this file for the dispute appeal window.
+const FEE_POLICY_TIMELOCK_SECS: u64 = 3 * 24 * 60 * 60;
 
 #[contract]
 pub struct PromptHashContract;
@@ -114,6 +118,11 @@ impl PromptHashTrait for PromptHashContract {
         };
 
         Storage::save_prompt(&env, &prompt)?;
+        Storage::set_prompt_fee_policy_version(
+            &env,
+            prompt_id,
+            InstanceStorage::get_current_fee_policy_version(&env),
+        );
         Storage::add_prompt_to_creator(&env, &creator, prompt_id);
         Events::emit_prompt_created(&env, prompt_id, creator, listing.price, listing.asset);
         Ok(prompt_id)
@@ -217,8 +226,10 @@ impl PromptHashTrait for PromptHashContract {
 
         let fee_wallet = InstanceStorage::get_fee_wallet(&env).ok_or(Error::FeeWalletNotSet)?;
         let this_contract = env.current_contract_address();
-        let fee_percentage = InstanceStorage::get_fee_percentage(&env);
-        ensure(fee_percentage <= MAX_BPS, Error::InvalidFeePercentage)?;
+        // Reads the live *current* policy (not this listing's pin) — lease
+        // has no splits/referral and can never go negative, so unlike buy
+        // there's no bricking risk in tracking the live rate (#82).
+        let fee_percentage = current_fee_policy(&env).fee_bps;
 
         let lease_price = prompt
             .price_stroops
@@ -227,13 +238,13 @@ impl PromptHashTrait for PromptHashContract {
             / MAX_BPS as i128;
         ensure(lease_price > 0, Error::InvalidPrice)?;
 
-        let fee_amount = lease_price
-            .checked_mul(fee_percentage as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / MAX_BPS as i128;
-        let seller_amount = lease_price
-            .checked_sub(fee_amount)
-            .ok_or(Error::ArithmeticOverflow)?;
+        // Lease has no referral cut or co-creator splits, so it's called
+        // with an empty split list — sharing the same arithmetic engine as
+        // buy/resale without changing lease's deduction menu (#82).
+        let no_splits: Vec<Split> = Vec::new(&env);
+        let allocation = allocate_payment(&env, lease_price, fee_percentage, None, &no_splits)?;
+        let fee_amount = allocation.fee;
+        let seller_amount = allocation.creator_amount;
 
         let asset_client = token::StellarAssetClient::new(&env, &prompt.asset);
         asset_client.transfer_from(&this_contract, &buyer, &prompt.creator, &seller_amount);
@@ -324,13 +335,14 @@ impl PromptHashTrait for PromptHashContract {
 
         let this_contract = env.current_contract_address();
         let asset_client = token::StellarAssetClient::new(&env, &prompt.asset);
-        let royalty_amount = resale_price
-            .checked_mul(ROYALTY_BPS as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / MAX_BPS as i128;
-        let seller_amount = resale_price
-            .checked_sub(royalty_amount)
-            .ok_or(Error::ArithmeticOverflow)?;
+        // Resale has no platform-fee cut or splits — only the fixed creator
+        // royalty — so it's called with an empty split list, sharing the
+        // same arithmetic engine as buy/lease without adding a new
+        // deduction category to resales (#82).
+        let no_splits: Vec<Split> = Vec::new(&env);
+        let allocation = allocate_payment(&env, resale_price, ROYALTY_BPS, None, &no_splits)?;
+        let royalty_amount = allocation.fee;
+        let seller_amount = allocation.creator_amount;
 
         if royalty_amount > 0 {
             asset_client.transfer_from(
@@ -444,6 +456,13 @@ impl PromptHashTrait for PromptHashContract {
 
         prompt.splits = new_splits;
         Storage::update_prompt(&env, &prompt);
+        // Re-pin to the currently active fee policy: touching splits is the
+        // creator's explicit acceptance of the current rates (#82).
+        Storage::set_prompt_fee_policy_version(
+            &env,
+            prompt_id,
+            InstanceStorage::get_current_fee_policy_version(&env),
+        );
         Events::emit_splits_updated(&env, prompt_id);
         Ok(())
     }
@@ -572,10 +591,7 @@ impl PromptHashTrait for PromptHashContract {
 
     #[only_owner]
     fn set_fee_percentage(env: Env, new_fee_percentage: u32) -> Result<(), Error> {
-        ensure(new_fee_percentage <= MAX_BPS, Error::InvalidFeePercentage)?;
-        InstanceStorage::set_fee_percentage(&env, &new_fee_percentage);
-        Events::emit_fee_updated(&env, new_fee_percentage);
-        Ok(())
+        propose_fee_change(&env, Some(new_fee_percentage), None)
     }
 
     #[only_owner]
@@ -586,7 +602,7 @@ impl PromptHashTrait for PromptHashContract {
     }
 
     fn get_fee_percentage(env: Env) -> u32 {
-        InstanceStorage::get_fee_percentage(&env)
+        current_fee_policy(&env).fee_bps
     }
 
     fn get_fee_wallet(env: Env) -> Option<Address> {
@@ -598,16 +614,104 @@ impl PromptHashTrait for PromptHashContract {
         admin.require_auth();
         let owner = ownable::get_owner(&env).ok_or(Error::Unauthorized)?;
         ensure(owner == admin, Error::Unauthorized)?;
-        ensure(new_fee <= MAX_PLATFORM_FEE, Error::FeeExceedsMaximum)?;
-
-        let old_fee = InstanceStorage::get_fee_percentage(&env);
-        InstanceStorage::set_fee_percentage(&env, &new_fee);
-        Events::emit_platform_fee_updated(&env, old_fee, new_fee, admin);
-        Ok(())
+        propose_fee_change(&env, Some(new_fee), None)
     }
 
     fn get_platform_fee(env: Env) -> u32 {
-        InstanceStorage::get_fee_percentage(&env)
+        current_fee_policy(&env).fee_bps
+    }
+
+    /// Activate a previously proposed fee/referral change once its timelock
+    /// has elapsed (#82). Permissionless: the values were already fixed and
+    /// made public at proposal time, so anyone may trigger the state
+    /// transition once it's due — there's nothing to gain by front-running.
+    fn activate_pending_fee_policy(env: Env) -> Result<u32, Error> {
+        let pending =
+            InstanceStorage::get_pending_fee_policy(&env).ok_or(Error::NoPendingFeePolicy)?;
+        let now = env.ledger().timestamp();
+        ensure(
+            now >= pending.effective_at,
+            Error::FeePolicyTimelockNotElapsed,
+        )?;
+
+        let current_version = InstanceStorage::get_current_fee_policy_version(&env);
+        if Storage::get_fee_policy(&env, current_version).is_none() {
+            // Freeze the pre-governance baseline exactly once, before it is
+            // ever superseded, so listings still pinned to it keep reading
+            // the values that were live before any governed change (#82).
+            let baseline = FeePolicy {
+                version: current_version,
+                fee_bps: InstanceStorage::get_fee_percentage(&env),
+                referral_bps: InstanceStorage::get_referral_percentage(&env),
+                effective_at: 0,
+            };
+            Storage::save_fee_policy(&env, &baseline);
+        }
+
+        let activated = FeePolicy {
+            version: pending.version,
+            fee_bps: pending.fee_bps,
+            referral_bps: pending.referral_bps,
+            effective_at: now,
+        };
+        Storage::save_fee_policy(&env, &activated);
+        InstanceStorage::set_current_fee_policy_version(&env, activated.version);
+        InstanceStorage::clear_pending_fee_policy(&env);
+
+        Events::emit_fee_policy_activated(
+            &env,
+            activated.version,
+            activated.fee_bps,
+            activated.referral_bps,
+        );
+        Ok(activated.version)
+    }
+
+    fn get_pending_fee_policy(env: Env) -> Option<FeePolicy> {
+        InstanceStorage::get_pending_fee_policy(&env)
+    }
+
+    fn get_fee_policy(env: Env, version: u32) -> FeePolicy {
+        resolve_fee_policy(&env, version)
+    }
+
+    fn get_current_fee_policy_version(env: Env) -> u32 {
+        InstanceStorage::get_current_fee_policy_version(&env)
+    }
+
+    fn get_prompt_fee_policy_version(env: Env, prompt_id: u64) -> Result<u32, Error> {
+        Storage::require_prompt(&env, prompt_id)?;
+        Ok(Storage::get_prompt_fee_policy_version(&env, prompt_id))
+    }
+
+    fn preview_purchase(
+        env: Env,
+        prompt_id: u64,
+        payment_amount_stroops: i128,
+        has_referrer: bool,
+    ) -> Result<PurchasePreview, Error> {
+        let prompt = Storage::require_prompt(&env, prompt_id)?;
+        let policy_version = Storage::get_prompt_fee_policy_version(&env, prompt_id);
+        let policy = resolve_fee_policy(&env, policy_version);
+        let referral_bps = if has_referrer {
+            Some(policy.referral_bps)
+        } else {
+            None
+        };
+        let allocation = allocate_payment(
+            &env,
+            payment_amount_stroops,
+            policy.fee_bps,
+            referral_bps,
+            &prompt.splits,
+        )?;
+        Ok(PurchasePreview {
+            policy_version,
+            fee_amount: allocation.fee,
+            referral_amount: allocation.referral,
+            split_amounts: allocation.split_amounts,
+            creator_amount: allocation.creator_amount,
+        })
     }
 
     fn get_xlm_sac(env: Env) -> Option<Address> {
@@ -638,16 +742,11 @@ impl PromptHashTrait for PromptHashContract {
 
     #[only_owner]
     fn set_referral_percentage(env: Env, new_referral_percentage: u32) -> Result<(), Error> {
-        ensure(
-            new_referral_percentage <= MAX_BPS,
-            Error::InvalidReferralPercentage,
-        )?;
-        InstanceStorage::set_referral_percentage(&env, new_referral_percentage);
-        Ok(())
+        propose_fee_change(&env, None, Some(new_referral_percentage))
     }
 
     fn get_referral_percentage(env: Env) -> u32 {
-        InstanceStorage::get_referral_percentage(&env)
+        current_fee_policy(&env).referral_bps
     }
 
     fn add_voucher(
@@ -1081,48 +1180,29 @@ fn execute_buy(
     let fee_wallet = InstanceStorage::get_fee_wallet(env).ok_or(Error::FeeWalletNotSet)?;
     let this_contract = env.current_contract_address();
 
-    let fee_percentage = InstanceStorage::get_fee_percentage(env);
-    ensure(fee_percentage <= MAX_BPS, Error::InvalidFeePercentage)?;
-
-    let fee_amount = payment_amount_stroops
-        .checked_mul(fee_percentage as i128)
-        .ok_or(Error::ArithmeticOverflow)?
-        / MAX_BPS as i128;
-
-    let referral_percentage = InstanceStorage::get_referral_percentage(env);
-    let referral_amount = if referrer.is_some() {
-        payment_amount_stroops
-            .checked_mul(referral_percentage as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / MAX_BPS as i128
+    // Use the fee policy this listing is pinned to (from creation, or its
+    // last `update_splits` re-pin) rather than the live global rate — a
+    // later admin fee change can then never retroactively brick an
+    // already-listed prompt's purchasability (#82).
+    let policy_version = Storage::get_prompt_fee_policy_version(env, prompt_id);
+    let policy = resolve_fee_policy(env, policy_version);
+    let fee_percentage = policy.fee_bps;
+    let referral_percentage = policy.referral_bps;
+    let referral_bps = if referrer.is_some() {
+        Some(referral_percentage)
     } else {
-        0
+        None
     };
-
-    let deductions = fee_amount
-        .checked_add(referral_amount)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let mut split_total: i128 = 0;
-    for i in 0..prompt.splits.len() {
-        let split = prompt.splits.get(i).unwrap();
-        let split_amount = payment_amount_stroops
-            .checked_mul(split.bps as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / MAX_BPS as i128;
-        split_total = split_total
-            .checked_add(split_amount)
-            .ok_or(Error::ArithmeticOverflow)?;
-    }
-
-    let total_deductions = deductions
-        .checked_add(split_total)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let creator_amount = payment_amount_stroops
-        .checked_sub(total_deductions)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    ensure(creator_amount >= 0, Error::InvalidSplits)?;
+    // Validates that fee + referral + splits <= 100% for this payment;
+    // the actual per-recipient amounts are recomputed from these same
+    // pinned rates at payout time (see `execute_resolution_transfer`).
+    allocate_payment(
+        env,
+        payment_amount_stroops,
+        fee_percentage,
+        referral_bps,
+        &prompt.splits,
+    )?;
 
     let asset_client = token::StellarAssetClient::new(env, &prompt.asset);
     asset_client.transfer_from(&this_contract, buyer, &this_contract, &payment_amount_stroops);
@@ -1191,9 +1271,18 @@ fn execute_buy(
     Ok(())
 }
 
+/// Validates that a listing's splits fit within `MAX_BPS` alongside the
+/// *currently active* fee policy's fee and referral rates — the same
+/// policy version `create_prompt`/`update_splits` are about to pin the
+/// listing to. Including `referral_bps` here (previously omitted) closes a
+/// latent solvency gap: a referred purchase could otherwise deduct
+/// fee + referral + splits > 100% even without any fee change (#82).
 fn validate_splits(env: &Env, splits: &Vec<Split>) -> Result<(), Error> {
-    let fee_percentage = InstanceStorage::get_fee_percentage(env);
-    let mut total_bps: u32 = 0;
+    let policy = current_fee_policy(env);
+    let mut total_bps: u32 = policy
+        .fee_bps
+        .checked_add(policy.referral_bps)
+        .ok_or(Error::ArithmeticOverflow)?;
     for i in 0..splits.len() {
         let split = splits.get(i).unwrap();
         ensure(split.bps > 0, Error::InvalidSplits)?;
@@ -1201,11 +1290,140 @@ fn validate_splits(env: &Env, splits: &Vec<Split>) -> Result<(), Error> {
             .checked_add(split.bps)
             .ok_or(Error::ArithmeticOverflow)?;
     }
-    let total = total_bps
-        .checked_add(fee_percentage)
-        .ok_or(Error::ArithmeticOverflow)?;
-    ensure(total <= MAX_BPS, Error::InvalidSplits)?;
+    ensure(total_bps <= MAX_BPS, Error::InvalidSplits)?;
     Ok(())
+}
+
+/// Resolves the fee policy for `version`. Falls back to the synthesized
+/// pre-governance baseline (today's live `FeePercentage`/
+/// `ReferralPercentage` values) for any version not yet materialized into
+/// history — which, by construction, is only ever version `0` prior to the
+/// first `activate_pending_fee_policy` call (#82).
+fn resolve_fee_policy(env: &Env, version: u32) -> FeePolicy {
+    if let Some(policy) = Storage::get_fee_policy(env, version) {
+        return policy;
+    }
+    FeePolicy {
+        version,
+        fee_bps: InstanceStorage::get_fee_percentage(env),
+        referral_bps: InstanceStorage::get_referral_percentage(env),
+        effective_at: 0,
+    }
+}
+
+fn current_fee_policy(env: &Env) -> FeePolicy {
+    resolve_fee_policy(env, InstanceStorage::get_current_fee_policy_version(env))
+}
+
+/// Stages a fee/referral change behind the governance timelock (#82).
+/// Overriding only `new_fee_bps` or only `new_referral_bps` preserves
+/// whatever the *other* field is currently pending (or active, if nothing
+/// is pending) — so `set_fee_percentage` and `set_referral_percentage` can
+/// be called independently without clobbering each other. Any new proposal
+/// replaces the previous one outright and restarts the timelock.
+fn propose_fee_change(
+    env: &Env,
+    new_fee_bps: Option<u32>,
+    new_referral_bps: Option<u32>,
+) -> Result<(), Error> {
+    if let Some(fee) = new_fee_bps {
+        ensure(fee <= MAX_PLATFORM_FEE, Error::FeeExceedsMaximum)?;
+    }
+    if let Some(referral) = new_referral_bps {
+        ensure(referral <= MAX_BPS, Error::InvalidReferralPercentage)?;
+    }
+
+    let current_version = InstanceStorage::get_current_fee_policy_version(env);
+    let baseline = InstanceStorage::get_pending_fee_policy(env)
+        .unwrap_or_else(|| resolve_fee_policy(env, current_version));
+
+    let now = env.ledger().timestamp();
+    let pending = FeePolicy {
+        version: current_version
+            .checked_add(1)
+            .ok_or(Error::ArithmeticOverflow)?,
+        fee_bps: new_fee_bps.unwrap_or(baseline.fee_bps),
+        referral_bps: new_referral_bps.unwrap_or(baseline.referral_bps),
+        effective_at: now
+            .checked_add(FEE_POLICY_TIMELOCK_SECS)
+            .ok_or(Error::ArithmeticOverflow)?,
+    };
+    InstanceStorage::set_pending_fee_policy(env, &pending);
+    Events::emit_fee_policy_proposed(
+        env,
+        pending.version,
+        pending.fee_bps,
+        pending.referral_bps,
+        pending.effective_at,
+    );
+    Ok(())
+}
+
+/// `amount * bps / MAX_BPS`, floor-rounded toward zero.
+fn bps_amount(amount: i128, bps: u32) -> Result<i128, Error> {
+    ensure(bps <= MAX_BPS, Error::InvalidFeePercentage)?;
+    Ok(amount
+        .checked_mul(bps as i128)
+        .ok_or(Error::ArithmeticOverflow)?
+        / MAX_BPS as i128)
+}
+
+struct Allocation {
+    fee: i128,
+    referral: i128,
+    split_amounts: Vec<i128>,
+    creator_amount: i128,
+}
+
+/// Shared waterfall allocator: deducts an optional fee, an optional
+/// referral cut, then co-creator splits (in listing order) from `amount`.
+/// The remaining `creator_amount` absorbs the integer-division remainder —
+/// matching the existing "creator absorbs rounding dust" convention
+/// documented on `Split::bps` — and is guaranteed non-negative whenever
+/// `fee_bps + referral_bps + sum(split.bps) <= MAX_BPS`, since each term is
+/// floor-divided against the same `amount` and floor(a/n) sums never
+/// exceed floor of the combined total. Used by every money-splitting call
+/// site (buy/bulk-buy validation, escrow payout, lease, resale royalty) so
+/// their arithmetic can never drift apart (#82).
+fn allocate_payment(
+    env: &Env,
+    amount: i128,
+    fee_bps: u32,
+    referral_bps: Option<u32>,
+    splits: &Vec<Split>,
+) -> Result<Allocation, Error> {
+    let fee = bps_amount(amount, fee_bps)?;
+    let referral = match referral_bps {
+        Some(bps) => bps_amount(amount, bps)?,
+        None => 0,
+    };
+
+    let mut split_amounts = Vec::new(env);
+    let mut split_total: i128 = 0;
+    for i in 0..splits.len() {
+        let split = splits.get(i).unwrap();
+        let split_amount = bps_amount(amount, split.bps)?;
+        split_total = split_total
+            .checked_add(split_amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+        split_amounts.push_back(split_amount);
+    }
+
+    let creator_amount = amount
+        .checked_sub(fee)
+        .ok_or(Error::ArithmeticOverflow)?
+        .checked_sub(referral)
+        .ok_or(Error::ArithmeticOverflow)?
+        .checked_sub(split_total)
+        .ok_or(Error::ArithmeticOverflow)?;
+    ensure(creator_amount >= 0, Error::InvalidSplits)?;
+
+    Ok(Allocation {
+        fee,
+        referral,
+        split_amounts,
+        creator_amount,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1287,57 +1505,42 @@ fn execute_resolution_transfer(env: &Env, escrow: &mut Escrow, refund: bool) -> 
         
         Events::emit_escrow_refunded(env, escrow.prompt_id, escrow.buyer.clone());
     } else {
-        // Perform payouts based on snapshotted splits/fees
-        let fee_amount = transfer_price
-            .checked_mul(escrow.fee_percentage as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / MAX_BPS as i128;
-
-        let referral_amount = if escrow.referrer.is_some() {
-            transfer_price
-                .checked_mul(escrow.referral_percentage as i128)
-                .ok_or(Error::ArithmeticOverflow)?
-                / MAX_BPS as i128
+        // Payout based on the snapshotted splits/fees, computed once via the
+        // shared allocator (previously this recomputed the split amounts a
+        // second time to pay them out, a second hand-copy of the same
+        // formula that could silently drift from the first) (#82).
+        let referral_bps = if escrow.referrer.is_some() {
+            Some(escrow.referral_percentage)
         } else {
-            0
+            None
         };
-
-        let mut split_total: i128 = 0;
-        for split in escrow.splits.iter() {
-            let split_amount = transfer_price
-                .checked_mul(split.bps as i128)
-                .ok_or(Error::ArithmeticOverflow)?
-                / MAX_BPS as i128;
-            split_total = split_total
-                .checked_add(split_amount)
-                .ok_or(Error::ArithmeticOverflow)?;
-        }
-
-        let creator_amount = transfer_price
-            .checked_sub(fee_amount)
-            .ok_or(Error::ArithmeticOverflow)?
-            .checked_sub(referral_amount)
-            .ok_or(Error::ArithmeticOverflow)?
-            .checked_sub(split_total)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let allocation = allocate_payment(
+            env,
+            transfer_price,
+            escrow.fee_percentage,
+            referral_bps,
+            &escrow.splits,
+        )?;
 
         let asset_client = token::StellarAssetClient::new(env, &escrow.asset);
-        if creator_amount > 0 {
-            asset_client.transfer(&env.current_contract_address(), &escrow.creator, &creator_amount);
+        if allocation.creator_amount > 0 {
+            asset_client.transfer(
+                &env.current_contract_address(),
+                &escrow.creator,
+                &allocation.creator_amount,
+            );
         }
-        if fee_amount > 0 {
-            asset_client.transfer(&env.current_contract_address(), &escrow.fee_wallet, &fee_amount);
+        if allocation.fee > 0 {
+            asset_client.transfer(&env.current_contract_address(), &escrow.fee_wallet, &allocation.fee);
         }
         if let Some(ref r) = escrow.referrer {
-            if referral_amount > 0 {
-                asset_client.transfer(&env.current_contract_address(), r, &referral_amount);
+            if allocation.referral > 0 {
+                asset_client.transfer(&env.current_contract_address(), r, &allocation.referral);
             }
         }
-        for split in escrow.splits.iter() {
-            let split_amount = transfer_price
-                .checked_mul(split.bps as i128)
-                .ok_or(Error::ArithmeticOverflow)?
-                / MAX_BPS as i128;
+        for i in 0..escrow.splits.len() {
+            let split = escrow.splits.get(i).unwrap();
+            let split_amount = allocation.split_amounts.get(i).unwrap();
             if split_amount > 0 {
                 asset_client.transfer(&env.current_contract_address(), &split.recipient, &split_amount);
             }

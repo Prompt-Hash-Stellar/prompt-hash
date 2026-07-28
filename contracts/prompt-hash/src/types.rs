@@ -50,6 +50,8 @@ pub enum Error {
     DisputeExpired = 44,
     AppealWindowExpired = 45,
     ReviewerThresholdNotMet = 46,
+    NoPendingFeePolicy = 47,
+    FeePolicyTimelockNotElapsed = 48,
 }
 
 /// Instance storage keys — contract-level configuration stored in
@@ -65,6 +67,11 @@ pub enum InstanceDataKey {
     ReferralPercentage,
     IsPaused,
     ReviewerThreshold,
+    /// Currently active fee-policy version (#82). Defaults to `0` — the
+    /// pre-governance baseline read from `FeePercentage`/`ReferralPercentage`.
+    FeePolicyVersion,
+    /// A proposed fee-policy change awaiting its timelock (#82).
+    PendingFeePolicy,
 }
 
 /// Persistent storage keys — per-prompt and per-user data stored in
@@ -81,6 +88,16 @@ pub enum DataKey {
     PurchaseDispute(u64, Address),
     Escrow(u64, Address),
     Reviewers,
+    /// Immutable historical record of an activated fee policy, keyed by
+    /// version number (#82). Used to explain historical purchases and to
+    /// resolve a listing's pinned policy.
+    FeePolicyHistory(u32),
+    /// The fee-policy version a listing is pinned to (#82). Stored
+    /// separately from `Prompt` so upgrading the contract can add this
+    /// concept without breaking deserialization of already-stored `Prompt`
+    /// records. Absent means the listing predates fee-policy versioning and
+    /// is pinned to version `0` (today's live fee/referral values).
+    PromptFeePolicyVersion(u64),
 }
 
 #[contracttype]
@@ -168,6 +185,35 @@ pub struct Escrow {
 pub struct PricingConfig {
     pub price: i128,
     pub asset: Address,
+}
+
+/// A versioned snapshot of the platform's fee/referral rates (#82).
+/// Listings pin to a specific version at creation (and re-pin on
+/// `update_splits`) so that a later admin fee change can never retroactively
+/// alter — or brick — an already-listed prompt's economics.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeePolicy {
+    pub version: u32,
+    pub fee_bps: u32,
+    pub referral_bps: u32,
+    /// Ledger timestamp the policy became active (0 for the synthesized
+    /// pre-governance baseline, version 0).
+    pub effective_at: u64,
+}
+
+/// Result of `preview_purchase` — computed with the exact same allocation
+/// function `buy_prompt` uses, against the listing's pinned fee policy, so
+/// preview and execution can never diverge (#82).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PurchasePreview {
+    pub policy_version: u32,
+    pub fee_amount: i128,
+    pub referral_amount: i128,
+    /// Parallel to the listing's `splits`, in the same order.
+    pub split_amounts: Vec<i128>,
+    pub creator_amount: i128,
 }
 
 /// A single revenue-split entry stored inside a prompt.
@@ -395,6 +441,32 @@ pub trait PromptHashTrait {
     // New platform fee governance API
     fn update_platform_fee(env: Env, admin: Address, new_fee: u32) -> Result<(), Error>;
     fn get_platform_fee(env: Env) -> u32;
+
+    /// Activate a previously proposed fee-policy change once its timelock has
+    /// elapsed (#82). Permissionless: anyone may call it, but it only takes
+    /// effect once `env.ledger().timestamp() >= pending.effective_at`.
+    /// Returns the newly activated policy version.
+    fn activate_pending_fee_policy(env: Env) -> Result<u32, Error>;
+    /// The fee-policy change currently awaiting its timelock, if any.
+    fn get_pending_fee_policy(env: Env) -> Option<FeePolicy>;
+    /// Look up a historical (or the synthesized baseline) fee policy by
+    /// version number.
+    fn get_fee_policy(env: Env, version: u32) -> FeePolicy;
+    /// The fee-policy version currently active for new listings.
+    fn get_current_fee_policy_version(env: Env) -> u32;
+    /// The fee-policy version a specific listing is pinned to.
+    fn get_prompt_fee_policy_version(env: Env, prompt_id: u64) -> Result<u32, Error>;
+
+    /// Compute the exact fee/referral/split/creator breakdown for a
+    /// hypothetical purchase, using the listing's pinned fee policy — the
+    /// same allocation function `buy_prompt` executes, so preview and
+    /// execution can never diverge (#82).
+    fn preview_purchase(
+        env: Env,
+        prompt_id: u64,
+        payment_amount_stroops: i128,
+        has_referrer: bool,
+    ) -> Result<PurchasePreview, Error>;
     fn set_pause_status(env: Env, paused: bool) -> Result<(), Error>;
     fn is_paused(env: Env) -> bool;
     fn add_voucher(

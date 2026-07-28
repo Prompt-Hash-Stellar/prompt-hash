@@ -78,6 +78,29 @@ fn fund_buyer(
     xlm_client.approve(buyer, spender, &amount, &1_000);
 }
 
+/// Proposes a fee and/or referral change and advances the ledger past the
+/// governance timelock so it's activatable, then activates it (#82). Centralizes
+/// the propose→wait→activate boilerplate now required everywhere a test used to
+/// call `set_fee_percentage`/`set_referral_percentage` and rely on immediate effect.
+fn set_fee_policy(
+    env: &Env,
+    client: &PromptHashContractClient,
+    new_fee_bps: Option<u32>,
+    new_referral_bps: Option<u32>,
+) {
+    if let Some(fee) = new_fee_bps {
+        client.set_fee_percentage(&fee);
+    }
+    if let Some(referral) = new_referral_bps {
+        client.set_referral_percentage(&referral);
+    }
+    let pending = client.get_pending_fee_policy().expect("expected a pending fee policy");
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = pending.effective_at;
+    });
+    client.activate_pending_fee_policy();
+}
+
 fn create_prompt_with_splits(
     env: &Env,
     client: &PromptHashContractClient,
@@ -419,9 +442,38 @@ fn test_admin_can_update_platform_fee_within_bounds() {
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
 
-    // admin sets platform fee to 300 BPS (3%)
+    // admin proposes platform fee = 300 BPS (3%); it's governed by a
+    // timelock (#82), so it must not take effect immediately...
     client.update_platform_fee(&context.admin, &300u32);
+    assert_eq!(client.get_platform_fee(), 500u32);
+
+    // ...but does once the timelock elapses and it's activated.
+    let pending = client.get_pending_fee_policy().unwrap();
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = pending.effective_at;
+    });
+    client.activate_pending_fee_policy();
     assert_eq!(client.get_platform_fee(), 300u32);
+}
+
+#[test]
+fn test_platform_fee_change_not_activatable_before_timelock_elapses() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    client.update_platform_fee(&context.admin, &300u32);
+    let pending = client.get_pending_fee_policy().unwrap();
+
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = pending.effective_at - 1;
+    });
+    let result = client.try_activate_pending_fee_policy();
+    match result {
+        Err(Ok(Error::FeePolicyTimelockNotElapsed)) => {}
+        other => panic!("expected FeePolicyTimelockNotElapsed, got {:?}", other),
+    }
+    assert_eq!(client.get_platform_fee(), 500u32);
 }
 
 #[test]
@@ -766,7 +818,7 @@ fn test_buy_prompt_with_zero_fee() {
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
     // Set fee to 0
-    client.set_fee_percentage(&0);
+    set_fee_policy(&env, &client, Some(0), None);
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -799,8 +851,10 @@ fn test_buy_prompt_with_max_fee() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    // Set fee to 100% (10,000 BPS)
-    client.set_fee_percentage(&10_000);
+    // Set fee to the governed maximum (MAX_PLATFORM_FEE = 1_000 BPS = 10%).
+    // Platform fee changes are bounded by MAX_PLATFORM_FEE, not MAX_BPS
+    // (#82) — 100% is no longer a reachable platform fee.
+    set_fee_policy(&env, &client, Some(1_000), None);
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -822,8 +876,12 @@ fn test_buy_prompt_with_max_fee() {
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
     client.release_funds_early(&buyer, &prompt_id);
 
-    assert_eq!(xlm_client.balance(&creator), seller_start);
-    assert_eq!(xlm_client.balance(&context.fee_wallet), fee_start + price);
+    let expected_fee = price * 1_000 / 10_000;
+    assert_eq!(xlm_client.balance(&creator), seller_start + price - expected_fee);
+    assert_eq!(
+        xlm_client.balance(&context.fee_wallet),
+        fee_start + expected_fee
+    );
 }
 
 #[test]
@@ -1017,7 +1075,7 @@ fn test_buy_prompt_with_referrer_splits_payment_correctly() {
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
     // Set referral to 5% (500 BPS)
-    client.set_referral_percentage(&500);
+    set_fee_policy(&env, &client, None, Some(500));
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1075,7 +1133,7 @@ fn test_referrer_cannot_be_buyer() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500);
+    set_fee_policy(&env, &client, None, Some(500));
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1112,7 +1170,7 @@ fn test_referrer_cannot_be_creator() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500);
+    set_fee_policy(&env, &client, None, Some(500));
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1149,7 +1207,7 @@ fn test_buy_without_referrer_no_referral_amount_paid() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500);
+    set_fee_policy(&env, &client, None, Some(500));
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1191,8 +1249,8 @@ fn test_set_referral_percentage_only_owner() {
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
 
-    // Owner can set referral percentage
-    client.set_referral_percentage(&300);
+    // Owner can set referral percentage (governed by a timelock, #82)
+    set_fee_policy(&env, &client, None, Some(300));
     assert_eq!(client.get_referral_percentage(), 300);
 
     // Non-owner cannot set referral percentage
@@ -1755,7 +1813,7 @@ fn test_voucher_with_referrer_combined() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500); // 5%
+    set_fee_policy(&env, &client, None, Some(500)); // 5%
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -2515,7 +2573,7 @@ fn test_buy_prompts_bulk_with_referrer() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500); // 5%
+    set_fee_policy(&env, &client, None, Some(500)); // 5%
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -3761,4 +3819,451 @@ fn test_dispute_appeal_mechanics() {
     assert_eq!(escrow.state, crate::types::EscrowState::Refunded);
     assert_eq!(xlm_client.balance(&buyer), price);
     assert!(!client.has_access(&buyer, &prompt_id));
+}
+
+// ─── Issue #82: Fee Policy Versioning & Solvency Across Admin Fee Changes ──────
+
+#[test]
+fn test_fee_increase_does_not_brick_existing_listing() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let co_creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    // Default fee is 500 bps (5%). Splits fill the remaining 9_500 bps
+    // exactly — a valid boundary at creation time.
+    let mut splits = Vec::<Split>::new(&env);
+    splits.push_back(Split {
+        recipient: co_creator.clone(),
+        bps: 9_500,
+    });
+    let prompt_id =
+        create_prompt_with_splits(&env, &client, &creator, "Boundary Splits", price, &context.xlm, splits);
+
+    // Admin raises the platform fee to 1_000 bps (10%). Combined with the
+    // listing's 9_500 bps splits that would total 10_500 > MAX_BPS — the
+    // exact scenario #82 describes as "bricking purchases".
+    set_fee_policy(&env, &client, Some(1_000), None);
+    assert_eq!(client.get_fee_percentage(), 1_000);
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    // The purchase must still succeed: the listing is pinned to the fee
+    // policy active at creation time (500 bps), not the new live fee.
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
+
+    let expected_fee = price * 500 / 10_000;
+    let expected_split = price * 9_500 / 10_000;
+    assert_eq!(xlm_client.balance(&context.fee_wallet), expected_fee);
+    assert_eq!(xlm_client.balance(&co_creator), expected_split);
+    assert_eq!(xlm_client.balance(&creator), price - expected_fee - expected_split);
+}
+
+#[test]
+fn test_update_splits_repins_to_current_policy_and_rejects_stale_splits() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let creator = Address::generate(&env);
+    let co_creator = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    let mut splits = Vec::<Split>::new(&env);
+    splits.push_back(Split {
+        recipient: co_creator.clone(),
+        bps: 9_500,
+    });
+    let prompt_id = create_prompt_with_splits(
+        &env,
+        &client,
+        &creator,
+        "Repin Splits",
+        price,
+        &context.xlm,
+        splits.clone(),
+    );
+    assert_eq!(client.get_prompt_fee_policy_version(&prompt_id), 0);
+
+    set_fee_policy(&env, &client, Some(1_000), None);
+
+    // The old splits no longer fit under the new active policy
+    // (1_000 + 9_500 = 10_500 > MAX_BPS) — creator must lower them to
+    // explicitly accept the new policy.
+    let result = client.try_update_splits(&creator, &prompt_id, &splits);
+    match result {
+        Err(Ok(Error::InvalidSplits)) => {}
+        other => panic!("expected InvalidSplits, got {:?}", other),
+    }
+
+    let mut lowered_splits = Vec::<Split>::new(&env);
+    lowered_splits.push_back(Split {
+        recipient: co_creator,
+        bps: 9_000,
+    });
+    client.update_splits(&creator, &prompt_id, &lowered_splits);
+
+    // Re-pinned to the now-current version (1).
+    assert_eq!(client.get_prompt_fee_policy_version(&prompt_id), 1);
+}
+
+#[test]
+fn test_validate_splits_includes_referral_in_boundary_check() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    // fee = 500, referral = 400 -> 9_100 bps of splits exactly fills the
+    // remaining budget (500 + 400 + 9_100 = 10_000).
+    set_fee_policy(&env, &client, None, Some(400));
+
+    let creator = Address::generate(&env);
+    let co_creator = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    let mut over_splits = Vec::<Split>::new(&env);
+    over_splits.push_back(Split {
+        recipient: co_creator.clone(),
+        bps: 9_101,
+    });
+    let over_result = client.try_create_prompt(
+        &creator,
+        &String::from_str(&env, "https://example.com/img.png"),
+        &String::from_str(&env, "Over Referral Boundary"),
+        &String::from_str(&env, "Software Development"),
+        &String::from_str(&env, "preview"),
+        &String::from_str(&env, "ciphertext"),
+        &String::from_str(&env, "iv"),
+        &String::from_str(&env, "wrapped-key"),
+        &hash(&env, 201),
+        &ListingConfig {
+            price,
+            asset: context.xlm.clone(),
+            expires_at: 0,
+            splits: over_splits,
+            tags: Vec::new(&env),
+            max_supply: 0,
+        },
+    );
+    match over_result {
+        Err(Ok(Error::InvalidSplits)) => {}
+        other => panic!(
+            "expected InvalidSplits when fee+referral+splits > MAX_BPS, got {:?}",
+            other
+        ),
+    }
+
+    let mut splits = Vec::<Split>::new(&env);
+    splits.push_back(Split {
+        recipient: co_creator.clone(),
+        bps: 9_100,
+    });
+    let prompt_id =
+        create_prompt_with_splits(&env, &client, &creator, "Exact Referral Boundary", price, &context.xlm, splits);
+
+    let buyer = Address::generate(&env);
+    let referrer = Address::generate(&env);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    client.buy_prompt(
+        &buyer,
+        &prompt_id,
+        &Some(referrer.clone()),
+        &price,
+        &None::<Bytes>,
+    );
+    client.release_funds_early(&buyer, &prompt_id);
+
+    let expected_fee = price * 500 / 10_000;
+    let expected_referral = price * 400 / 10_000;
+    let expected_split = price * 9_100 / 10_000;
+    assert_eq!(xlm_client.balance(&context.fee_wallet), expected_fee);
+    assert_eq!(xlm_client.balance(&referrer), expected_referral);
+    assert_eq!(xlm_client.balance(&co_creator), expected_split);
+    // Exact boundary: no rounding dust left over for the creator.
+    assert_eq!(xlm_client.balance(&creator), 0);
+    assert_eq!(
+        expected_fee + expected_referral + expected_split,
+        price,
+        "conservation: fee + referral + splits must equal the full payment at an exact boundary"
+    );
+}
+
+#[test]
+fn test_tiny_payment_with_splits_never_bricks() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let co_creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 1;
+
+    let mut splits = Vec::<Split>::new(&env);
+    splits.push_back(Split {
+        recipient: co_creator.clone(),
+        bps: 4_000,
+    });
+    let prompt_id =
+        create_prompt_with_splits(&env, &client, &creator, "Tiny Payment", price, &context.xlm, splits);
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
+
+    // Every deduction floors to 0 on a 1-stroop payment; the creator
+    // absorbs the entire amount rather than the purchase reverting.
+    assert_eq!(xlm_client.balance(&context.fee_wallet), 0);
+    assert_eq!(xlm_client.balance(&co_creator), 0);
+    assert_eq!(xlm_client.balance(&creator), price);
+}
+
+#[test]
+fn test_max_splits_ten_recipients_exact_fill() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 100_000;
+
+    // 10 recipients x 950 bps + 500 bps fee = 10_000 bps exactly.
+    let mut splits = Vec::<Split>::new(&env);
+    let mut recipients = std::vec::Vec::new();
+    for _i in 0..10u32 {
+        let recipient = Address::generate(&env);
+        splits.push_back(Split {
+            recipient: recipient.clone(),
+            bps: 950,
+        });
+        recipients.push(recipient);
+    }
+    let prompt_id =
+        create_prompt_with_splits(&env, &client, &creator, "Ten Splits", price, &context.xlm, splits);
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
+
+    let expected_fee = price * 500 / 10_000;
+    let expected_split = price * 950 / 10_000;
+    let mut total_paid_out = expected_fee;
+    for recipient in recipients.iter() {
+        assert_eq!(xlm_client.balance(recipient), expected_split);
+        total_paid_out += expected_split;
+    }
+    let creator_amount = xlm_client.balance(&creator);
+    total_paid_out += creator_amount;
+    assert_eq!(
+        total_paid_out, price,
+        "conservation: fee + all splits + creator remainder must equal the full payment"
+    );
+}
+
+#[test]
+fn test_preview_purchase_matches_execution_across_a_fee_change() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    set_fee_policy(&env, &client, None, Some(300));
+
+    let creator = Address::generate(&env);
+    let co_creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let referrer = Address::generate(&env);
+    let price: i128 = 20_000;
+    let tip: i128 = 3_333;
+    let total_payment = price + tip;
+
+    let mut splits = Vec::<Split>::new(&env);
+    splits.push_back(Split {
+        recipient: co_creator.clone(),
+        bps: 2_000,
+    });
+    let prompt_id =
+        create_prompt_with_splits(&env, &client, &creator, "Preview Prompt", price, &context.xlm, splits);
+
+    // Raise the live platform fee afterward — preview must still reflect
+    // this listing's pinned policy, not the new live rate.
+    set_fee_policy(&env, &client, Some(900), None);
+
+    // The listing was created after the referral-percentage change but
+    // before the fee-percentage change, so it's pinned to version 1.
+    let preview = client.preview_purchase(&prompt_id, &total_payment, &true);
+    assert_eq!(preview.policy_version, 1);
+    assert_ne!(preview.fee_amount, total_payment * 900 / 10_000);
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, total_payment);
+    client.buy_prompt(
+        &buyer,
+        &prompt_id,
+        &Some(referrer.clone()),
+        &total_payment,
+        &None::<Bytes>,
+    );
+    client.release_funds_early(&buyer, &prompt_id);
+
+    assert_eq!(xlm_client.balance(&context.fee_wallet), preview.fee_amount);
+    assert_eq!(xlm_client.balance(&referrer), preview.referral_amount);
+    assert_eq!(xlm_client.balance(&co_creator), preview.split_amounts.get(0).unwrap());
+    assert_eq!(xlm_client.balance(&creator), preview.creator_amount);
+}
+
+#[test]
+fn test_tipped_dispute_resolution_matches_direct_release() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 10_000;
+    let tip: i128 = 5_000;
+    let total_payment = price + tip;
+    let prompt_id = create_prompt(&env, &client, &creator, "Tipped Dispute", price, &context.xlm);
+
+    fund_buyer(&xlm_client, &buyer, &context.contract, total_payment);
+    client.buy_prompt(
+        &buyer,
+        &prompt_id,
+        &None::<Address>,
+        &total_payment,
+        &None::<Bytes>,
+    );
+    client.open_dispute(&buyer, &prompt_id, &crate::types::DisputeReason::MissingMetadata);
+    // Admin rules against the buyer (refund = false): funds release exactly
+    // as they would have via `release_funds_early`, proving the shared
+    // allocator behaves identically whichever entry point calls it (#82).
+    client.resolve_dispute(&context.admin, &prompt_id, &buyer, &false);
+
+    let expected_fee = total_payment * 500 / 10_000;
+    let expected_creator = total_payment - expected_fee;
+    assert_eq!(xlm_client.balance(&context.fee_wallet), expected_fee);
+    assert_eq!(xlm_client.balance(&creator), expected_creator);
+}
+
+#[test]
+fn test_bulk_and_single_economics_match_after_fee_change() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let bulk_buyer = Address::generate(&env);
+    let single_buyer = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    let prompt_a = create_prompt(&env, &client, &creator, "Bulk A", price, &context.xlm);
+    let prompt_b = create_prompt(&env, &client, &creator, "Bulk B", price, &context.xlm);
+    let prompt_c = create_prompt(&env, &client, &creator, "Single C", price, &context.xlm);
+
+    // Raise the fee after all three listings are pinned to the old rate.
+    set_fee_policy(&env, &client, Some(1_000), None);
+
+    fund_buyer(&xlm_client, &bulk_buyer, &context.contract, price * 2);
+    fund_buyer(&xlm_client, &single_buyer, &context.contract, price);
+
+    let mut prompt_ids = Vec::<u64>::new(&env);
+    prompt_ids.push_back(prompt_a);
+    prompt_ids.push_back(prompt_b);
+    let mut payment_amounts = Vec::<i128>::new(&env);
+    payment_amounts.push_back(price);
+    payment_amounts.push_back(price);
+    client.buy_prompts_bulk(&bulk_buyer, &prompt_ids, &payment_amounts, &None::<Address>);
+    client.release_funds_early(&bulk_buyer, &prompt_a);
+    client.release_funds_early(&bulk_buyer, &prompt_b);
+
+    client.buy_prompt(&single_buyer, &prompt_c, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&single_buyer, &prompt_c);
+
+    // All three purchases succeeded despite the fee hike (not bricked),
+    // and all three used the same pre-hike pinned rate (500 bps), whether
+    // bought individually or in bulk.
+    let expected_fee = price * 500 / 10_000;
+    assert_eq!(xlm_client.balance(&context.fee_wallet), expected_fee * 3);
+    assert_eq!(xlm_client.balance(&creator), (price - expected_fee) * 3);
+}
+
+#[test]
+fn test_legacy_prompt_pinned_to_baseline_policy_survives_first_governance_change() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let creator = Address::generate(&env);
+    let prompt_id = create_prompt(&env, &client, &creator, "Legacy Prompt", 10_000, &context.xlm);
+
+    // Before any governance action, the listing is pinned to the
+    // synthesized baseline version 0, matching the constructor defaults.
+    assert_eq!(client.get_prompt_fee_policy_version(&prompt_id), 0);
+    let baseline = client.get_fee_policy(&0u32);
+    assert_eq!(baseline.fee_bps, 500);
+    assert_eq!(baseline.referral_bps, 0);
+    assert_eq!(client.get_fee_percentage(), baseline.fee_bps);
+
+    // First-ever governance action: the baseline is frozen into permanent
+    // history exactly once, before it's superseded (#82).
+    set_fee_policy(&env, &client, Some(700), None);
+    assert_eq!(client.get_current_fee_policy_version(), 1);
+
+    let frozen_baseline = client.get_fee_policy(&0u32);
+    assert_eq!(frozen_baseline.fee_bps, 500);
+    assert_eq!(frozen_baseline.referral_bps, 0);
+
+    let new_policy = client.get_fee_policy(&1u32);
+    assert_eq!(new_policy.fee_bps, 700);
+
+    // The legacy prompt's pin is untouched — it still resolves to the
+    // frozen baseline, not the newly activated policy.
+    assert_eq!(client.get_prompt_fee_policy_version(&prompt_id), 0);
+}
+
+#[test]
+fn test_lease_uses_live_fee_and_is_not_pinned() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer1 = Address::generate(&env);
+    let buyer2 = Address::generate(&env);
+    let price: i128 = 10_000;
+    let prompt_id = create_prompt(&env, &client, &creator, "Lease Fee Prompt", price, &context.xlm);
+
+    fund_buyer(&xlm_client, &buyer1, &context.contract, 100_000);
+    fund_buyer(&xlm_client, &buyer2, &context.contract, 100_000);
+
+    // First lease under the default 500 bps fee. (LEASE_PRICE_BPS = 4_000,
+    // mirroring the private constant in contract.rs.)
+    client.lease_prompt(&buyer1, &prompt_id, &600);
+    let lease_price = price * 4_000 / 10_000;
+    let expected_fee_before = lease_price * 500 / 10_000;
+    assert_eq!(xlm_client.balance(&context.fee_wallet), expected_fee_before);
+
+    // Lease intentionally reads the *live* fee (it has no splits/referral
+    // and can never go negative, so there's no bricking bug to fix) — a
+    // later fee change applies to the next lease immediately, unlike buy.
+    set_fee_policy(&env, &client, Some(1_000), None);
+    client.lease_prompt(&buyer2, &prompt_id, &600);
+    let expected_fee_after = lease_price * 1_000 / 10_000;
+    assert_eq!(
+        xlm_client.balance(&context.fee_wallet),
+        expected_fee_before + expected_fee_after
+    );
 }
