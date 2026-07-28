@@ -946,6 +946,13 @@ impl PromptHashTrait for PromptHashContract {
             proposal.schema_version,
             current_schema_version,
         )?;
+        if proposal.is_rollback {
+            let previous = InstanceStorage::get_previous_wasm_hash(&env);
+            ensure(
+                previous == Some(proposal.target_wasm_hash.clone()),
+                Error::UpgradeBindingMismatch,
+            )?;
+        }
 
         check_upgrade_invariants(&env)?;
 

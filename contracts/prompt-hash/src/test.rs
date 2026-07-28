@@ -4307,3 +4307,73 @@ fn test_marketplace_functions_unaffected_by_pending_upgrade_governance() {
     let prompt = client.get_prompt(&prompt_id);
     assert_eq!(prompt.sales_count, 1);
 }
+
+#[test]
+fn test_propose_rollback_fails_without_any_prior_upgrade() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    // No upgrade has ever executed, so PreviousWasmHash is unset — a
+    // rollback proposal can never be bound to a real prior version yet.
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &0u32);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &0u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &true,
+    );
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_rollback_rejects_schema_version_increase() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    // A rollback must restore a schema version at or below the current one
+    // (0 at genesis); proposing schema_version 1 as a rollback must fail
+    // the schema-transition gate before the (unrelated) missing-prior-hash
+    // check is ever reached.
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &true,
+    );
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_verify_upgrade_invariants_passes_for_healthy_configuration() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    // Callable standalone (e.g. via RPC simulation before proposing) and
+    // must not error once signers/threshold are configured validly.
+    client.verify_upgrade_invariants();
+}
