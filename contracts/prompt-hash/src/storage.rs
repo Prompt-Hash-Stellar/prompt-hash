@@ -1,6 +1,6 @@
 use super::types::{
-    DataKey, Error, InstanceDataKey, ListingRevisionRecord, Prompt, Purchase, PurchaseDispute,
-    Escrow,
+    DataKey, Error, FeePolicy, InstanceDataKey, ListingRevisionRecord, Prompt, Purchase,
+    PurchaseDispute, Escrow,
 };
 use soroban_sdk::{token, Address, BytesN, Env, Vec};
 
@@ -83,11 +83,6 @@ impl InstanceStorage {
         env.storage().instance().set(&key, &false);
     }
 
-    pub fn set_referral_percentage(env: &Env, percentage: u32) {
-        let key = InstanceDataKey::ReferralPercentage;
-        env.storage().instance().set(&key, &percentage);
-    }
-
     pub fn get_referral_percentage(env: &Env) -> u32 {
         let key = InstanceDataKey::ReferralPercentage;
         env.storage().instance().get(&key).unwrap_or(0)
@@ -112,6 +107,34 @@ impl InstanceStorage {
         let key = InstanceDataKey::ReviewerThreshold;
         env.storage().instance().get(&key).unwrap_or(1)
     }
+
+    pub fn get_current_fee_policy_version(env: &Env) -> u32 {
+        let key = InstanceDataKey::FeePolicyVersion;
+        env.storage().instance().get(&key).unwrap_or(0)
+    }
+
+    pub fn set_current_fee_policy_version(env: &Env, version: u32) {
+        let key = InstanceDataKey::FeePolicyVersion;
+        env.storage().instance().set(&key, &version);
+    }
+
+    pub fn get_pending_fee_policy(env: &Env) -> Option<FeePolicy> {
+        env.storage()
+            .instance()
+            .get(&InstanceDataKey::PendingFeePolicy)
+    }
+
+    pub fn set_pending_fee_policy(env: &Env, policy: &FeePolicy) {
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::PendingFeePolicy, policy);
+    }
+
+    pub fn clear_pending_fee_policy(env: &Env) {
+        env.storage()
+            .instance()
+            .remove(&InstanceDataKey::PendingFeePolicy);
+    }
 }
 
 /// Persistent storage for prompt, purchase, and user-index records.
@@ -133,6 +156,7 @@ impl Storage {
         let key = DataKey::Prompt(prompt.id);
         env.storage().persistent().set(&key, prompt);
         Self::extend_key_ttl(env, &key);
+        Self::extend_key_ttl(env, &DataKey::PromptFeePolicyVersion(prompt.id));
 
         let next_prompt_id = prompt.id.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
         InstanceStorage::save_prompt_counter(env, next_prompt_id);
@@ -143,6 +167,7 @@ impl Storage {
         let key = DataKey::Prompt(prompt_id);
         if let Some(prompt) = env.storage().persistent().get(&key) {
             Self::extend_key_ttl(env, &key);
+            Self::extend_key_ttl(env, &DataKey::PromptFeePolicyVersion(prompt_id));
             Some(prompt)
         } else {
             None
@@ -156,6 +181,43 @@ impl Storage {
     pub fn update_prompt(env: &Env, prompt: &Prompt) {
         let key = DataKey::Prompt(prompt.id);
         env.storage().persistent().set(&key, prompt);
+        Self::extend_key_ttl(env, &key);
+        Self::extend_key_ttl(env, &DataKey::PromptFeePolicyVersion(prompt.id));
+    }
+
+    /// The fee-policy version `prompt_id` is pinned to. Defaults to `0` (the
+    /// pre-governance baseline) if the listing predates fee-policy
+    /// versioning or its pin has never been set (#82).
+    pub fn get_prompt_fee_policy_version(env: &Env, prompt_id: u64) -> u32 {
+        let key = DataKey::PromptFeePolicyVersion(prompt_id);
+        let version = env.storage().persistent().get(&key);
+        if env.storage().persistent().has(&key) {
+            Self::extend_key_ttl(env, &key);
+        }
+        version.unwrap_or(0)
+    }
+
+    pub fn set_prompt_fee_policy_version(env: &Env, prompt_id: u64, version: u32) {
+        let key = DataKey::PromptFeePolicyVersion(prompt_id);
+        env.storage().persistent().set(&key, &version);
+        Self::extend_key_ttl(env, &key);
+    }
+
+    /// Look up an activated fee-policy record by version, if it has been
+    /// materialized (#82). Version `0` is not written eagerly — see
+    /// `contract::resolve_fee_policy` for the synthesized baseline.
+    pub fn get_fee_policy(env: &Env, version: u32) -> Option<FeePolicy> {
+        let key = DataKey::FeePolicyHistory(version);
+        let policy = env.storage().persistent().get(&key);
+        if env.storage().persistent().has(&key) {
+            Self::extend_key_ttl(env, &key);
+        }
+        policy
+    }
+
+    pub fn save_fee_policy(env: &Env, policy: &FeePolicy) {
+        let key = DataKey::FeePolicyHistory(policy.version);
+        env.storage().persistent().set(&key, policy);
         Self::extend_key_ttl(env, &key);
     }
 
@@ -441,6 +503,10 @@ impl Storage {
             let key = DataKey::Prompt(prompt_id);
             if env.storage().persistent().has(&key) {
                 Self::extend_key_ttl(env, &key);
+                let fee_policy_key = DataKey::PromptFeePolicyVersion(prompt_id);
+                if env.storage().persistent().has(&fee_policy_key) {
+                    Self::extend_key_ttl(env, &fee_policy_key);
+                }
                 if let Some(prompt) = Self::get_prompt(env, prompt_id) {
                     for rev in 0..=prompt.revision {
                         let rev_key = DataKey::ListingRevision(prompt_id, rev);
@@ -453,6 +519,14 @@ impl Storage {
                         Self::extend_key_ttl(env, &creator_key);
                     }
                 }
+            }
+        }
+
+        let current_version = InstanceStorage::get_current_fee_policy_version(env);
+        for version in 0..=current_version {
+            let key = DataKey::FeePolicyHistory(version);
+            if env.storage().persistent().has(&key) {
+                Self::extend_key_ttl(env, &key);
             }
         }
     }
