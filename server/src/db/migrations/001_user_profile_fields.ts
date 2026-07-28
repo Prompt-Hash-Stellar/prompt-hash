@@ -11,13 +11,7 @@
 import "dotenv/config";
 import mongoose from "mongoose";
 
-async function run() {
-  const uri = process.env.MONGODB_URI;
-  if (!uri) throw new Error("MONGODB_URI is not set");
-
-  await mongoose.connect(uri);
-  const db = mongoose.connection.db!;
-
+export async function up(db: any): Promise<void> {
   const result = await db.collection("users").updateMany(
     {
       $or: [
@@ -36,12 +30,45 @@ async function run() {
       },
     },
   );
-
   console.log(`[001] Updated ${result.modifiedCount} user documents`);
+}
+
+export async function down(db: any): Promise<void> {
+  const result = await db.collection("users").updateMany(
+    {},
+    {
+      $unset: {
+        displayName: "",
+        bio: "",
+        avatarUrl: "",
+        socialLinks: "",
+      },
+    },
+  );
+  console.log(`[001] Rollback: removed off-chain profile fields from ${result.modifiedCount} user documents`);
+}
+
+async function run() {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) throw new Error("MONGODB_URI is not set");
+
+  await mongoose.connect(uri);
+  const db = mongoose.connection.db!;
+  await up(db);
   await mongoose.disconnect();
 }
 
-run().catch((err) => {
-  console.error("[001] Migration failed:", err);
-  process.exit(1);
-});
+const isDirectRun =
+  typeof require !== "undefined" && require.main === module ||
+  (process.argv[1] && (
+    process.argv[1].endsWith("001_user_profile_fields.ts") ||
+    process.argv[1].endsWith("001_user_profile_fields.js")
+  ));
+
+if (isDirectRun) {
+  run().catch((err) => {
+    console.error("[001] Migration failed:", err);
+    process.exit(1);
+  });
+}
+
