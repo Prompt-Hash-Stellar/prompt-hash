@@ -91,6 +91,26 @@ struct PlatformFeeUpdated {
     pub admin: Address,
 }
 
+/// Emitted when an admin stages a fee/referral change behind the
+/// governance timelock (#82).
+#[contractevent]
+struct FeePolicyProposed {
+    #[topic]
+    pub version: u32,
+    pub fee_bps: u32,
+    pub referral_bps: u32,
+    pub effective_at: u64,
+}
+
+/// Emitted once a pending fee policy is activated after its timelock (#82).
+#[contractevent]
+struct FeePolicyActivated {
+    #[topic]
+    pub version: u32,
+    pub fee_bps: u32,
+    pub referral_bps: u32,
+}
+
 #[contractevent]
 struct ListingExtended {
     #[topic]
@@ -245,6 +265,31 @@ impl Events {
             old_fee,
             new_fee,
             admin,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_fee_policy_proposed(
+        env: &Env,
+        version: u32,
+        fee_bps: u32,
+        referral_bps: u32,
+        effective_at: u64,
+    ) {
+        FeePolicyProposed {
+            version,
+            fee_bps,
+            referral_bps,
+            effective_at,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_fee_policy_activated(env: &Env, version: u32, fee_bps: u32, referral_bps: u32) {
+        FeePolicyActivated {
+            version,
+            fee_bps,
+            referral_bps,
         }
         .publish(env);
     }

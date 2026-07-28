@@ -78,6 +78,29 @@ fn fund_buyer(
     xlm_client.approve(buyer, spender, &amount, &1_000);
 }
 
+/// Proposes a fee and/or referral change and advances the ledger past the
+/// governance timelock so it's activatable, then activates it (#82). Centralizes
+/// the propose→wait→activate boilerplate now required everywhere a test used to
+/// call `set_fee_percentage`/`set_referral_percentage` and rely on immediate effect.
+fn set_fee_policy(
+    env: &Env,
+    client: &PromptHashContractClient,
+    new_fee_bps: Option<u32>,
+    new_referral_bps: Option<u32>,
+) {
+    if let Some(fee) = new_fee_bps {
+        client.set_fee_percentage(&fee);
+    }
+    if let Some(referral) = new_referral_bps {
+        client.set_referral_percentage(&referral);
+    }
+    let pending = client.get_pending_fee_policy().expect("expected a pending fee policy");
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = pending.effective_at;
+    });
+    client.activate_pending_fee_policy();
+}
+
 fn create_prompt_with_splits(
     env: &Env,
     client: &PromptHashContractClient,
@@ -420,9 +443,38 @@ fn test_admin_can_update_platform_fee_within_bounds() {
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
 
-    // admin sets platform fee to 300 BPS (3%)
+    // admin proposes platform fee = 300 BPS (3%); it's governed by a
+    // timelock (#82), so it must not take effect immediately...
     client.update_platform_fee(&context.admin, &300u32);
+    assert_eq!(client.get_platform_fee(), 500u32);
+
+    // ...but does once the timelock elapses and it's activated.
+    let pending = client.get_pending_fee_policy().unwrap();
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = pending.effective_at;
+    });
+    client.activate_pending_fee_policy();
     assert_eq!(client.get_platform_fee(), 300u32);
+}
+
+#[test]
+fn test_platform_fee_change_not_activatable_before_timelock_elapses() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    client.update_platform_fee(&context.admin, &300u32);
+    let pending = client.get_pending_fee_policy().unwrap();
+
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = pending.effective_at - 1;
+    });
+    let result = client.try_activate_pending_fee_policy();
+    match result {
+        Err(Ok(Error::FeePolicyTimelockNotElapsed)) => {}
+        other => panic!("expected FeePolicyTimelockNotElapsed, got {:?}", other),
+    }
+    assert_eq!(client.get_platform_fee(), 500u32);
 }
 
 #[test]
@@ -779,7 +831,7 @@ fn test_buy_prompt_with_zero_fee() {
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
     // Set fee to 0
-    client.set_fee_percentage(&0);
+    set_fee_policy(&env, &client, Some(0), None);
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -812,8 +864,10 @@ fn test_buy_prompt_with_max_fee() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    // Set fee to 100% (10,000 BPS)
-    client.set_fee_percentage(&10_000);
+    // Set fee to the governed maximum (MAX_PLATFORM_FEE = 1_000 BPS = 10%).
+    // Platform fee changes are bounded by MAX_PLATFORM_FEE, not MAX_BPS
+    // (#82) — 100% is no longer a reachable platform fee.
+    set_fee_policy(&env, &client, Some(1_000), None);
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -835,8 +889,12 @@ fn test_buy_prompt_with_max_fee() {
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
     client.release_funds_early(&buyer, &prompt_id);
 
-    assert_eq!(xlm_client.balance(&creator), seller_start);
-    assert_eq!(xlm_client.balance(&context.fee_wallet), fee_start + price);
+    let expected_fee = price * 1_000 / 10_000;
+    assert_eq!(xlm_client.balance(&creator), seller_start + price - expected_fee);
+    assert_eq!(
+        xlm_client.balance(&context.fee_wallet),
+        fee_start + expected_fee
+    );
 }
 
 #[test]
@@ -1030,7 +1088,7 @@ fn test_buy_prompt_with_referrer_splits_payment_correctly() {
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
     // Set referral to 5% (500 BPS)
-    client.set_referral_percentage(&500);
+    set_fee_policy(&env, &client, None, Some(500));
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1088,7 +1146,7 @@ fn test_referrer_cannot_be_buyer() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500);
+    set_fee_policy(&env, &client, None, Some(500));
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1125,7 +1183,7 @@ fn test_referrer_cannot_be_creator() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500);
+    set_fee_policy(&env, &client, None, Some(500));
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1162,7 +1220,7 @@ fn test_buy_without_referrer_no_referral_amount_paid() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500);
+    set_fee_policy(&env, &client, None, Some(500));
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1204,8 +1262,8 @@ fn test_set_referral_percentage_only_owner() {
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
 
-    // Owner can set referral percentage
-    client.set_referral_percentage(&300);
+    // Owner can set referral percentage (governed by a timelock, #82)
+    set_fee_policy(&env, &client, None, Some(300));
     assert_eq!(client.get_referral_percentage(), 300);
 
     // Non-owner cannot set referral percentage
@@ -1768,7 +1826,7 @@ fn test_voucher_with_referrer_combined() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500); // 5%
+    set_fee_policy(&env, &client, None, Some(500)); // 5%
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -2528,7 +2586,7 @@ fn test_buy_prompts_bulk_with_referrer() {
     let client = PromptHashContractClient::new(&env, &context.contract);
     let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    client.set_referral_percentage(&500); // 5%
+    set_fee_policy(&env, &client, None, Some(500)); // 5%
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
