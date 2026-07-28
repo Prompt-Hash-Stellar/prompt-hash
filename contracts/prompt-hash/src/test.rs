@@ -1,6 +1,6 @@
 use crate::contract::{PromptHashContract, PromptHashContractClient};
 use crate::mock_asset::FungibleTokenContract;
-use crate::types::{Error, ListingConfig, Split};
+use crate::types::{DataKey, Error, ListingConfig, Split};
 extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -143,9 +143,10 @@ fn test_create_prompt_stores_encrypted_fields() {
     assert_eq!(prompt.expires_at, 0);
     assert_eq!(prompt.splits.len(), 0);
 
-    let all_prompts = client.get_all_prompts();
-    assert_eq!(all_prompts.len(), 1);
-    assert_eq!(all_prompts.get(0).unwrap().id, prompt_id);
+    let page = client.get_active_prompts_page(&None, &50);
+    assert_eq!(page.prompts.len(), 1);
+    assert_eq!(page.prompts.get(0).unwrap().id, prompt_id);
+    assert!(page.next_cursor.is_none());
 }
 
 #[test]
@@ -522,8 +523,14 @@ fn test_get_prompts_by_creator_and_buyer() {
         &None::<Bytes>,
     );
 
-    assert_eq!(client.get_prompts_by_creator(&creator).len(), 2);
-    assert_eq!(client.get_prompts_by_buyer(&buyer).len(), 1);
+    assert_eq!(
+        client.get_prompts_by_creator_page(&creator, &None, &50).prompts.len(),
+        2
+    );
+    assert_eq!(
+        client.get_prompts_by_buyer_page(&buyer, &None, &50).prompts.len(),
+        1
+    );
 }
 
 #[test]
@@ -569,8 +576,14 @@ fn test_license_owner_can_transfer_and_creator_receives_royalty() {
     assert_eq!(xlm_client.balance(&buyer), buyer_before - resale_price);
     assert!(!client.has_access(&seller, &prompt_id));
     assert!(client.has_access(&buyer, &prompt_id));
-    assert_eq!(client.get_prompts_by_buyer(&seller).len(), 0);
-    assert_eq!(client.get_prompts_by_buyer(&buyer).len(), 1);
+    assert_eq!(
+        client.get_prompts_by_buyer_page(&seller, &None, &50).prompts.len(),
+        0
+    );
+    assert_eq!(
+        client.get_prompts_by_buyer_page(&buyer, &None, &50).prompts.len(),
+        1
+    );
 }
 
 #[test]
@@ -1323,8 +1336,8 @@ fn test_read_only_methods_work_when_paused() {
     let prompt = client.get_prompt(&prompt_id);
     assert_eq!(prompt.id, prompt_id);
 
-    let all = client.get_all_prompts();
-    assert_eq!(all.len(), 1);
+    let page = client.get_active_prompts_page(&None, &50);
+    assert_eq!(page.prompts.len(), 1);
 
     assert!(client.has_access(&creator, &prompt_id));
     assert!(client.is_paused());
@@ -2010,7 +2023,7 @@ fn test_create_prompt_with_expiry_stores_expires_at() {
 }
 
 #[test]
-fn test_expired_listing_excluded_from_get_all_prompts() {
+fn test_expired_listing_excluded_from_get_active_prompts_page() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
@@ -2042,12 +2055,12 @@ fn test_expired_listing_excluded_from_get_all_prompts() {
     let persistent = create_prompt(&env, &client, &creator, "Persistent", 5_000, &context.xlm);
 
     // Both visible before expiry
-    assert_eq!(client.get_all_prompts().len(), 2);
+    assert_eq!(client.get_active_prompts_page(&None, &50).prompts.len(), 2);
 
     // Advance time past the first prompt's expiry
     env.ledger().with_mut(|l| l.timestamp = 3_000);
 
-    let visible = client.get_all_prompts();
+    let visible = client.get_active_prompts_page(&None, &50).prompts;
     assert_eq!(visible.len(), 1);
     assert_eq!(visible.get(0).unwrap().id, persistent);
 }
@@ -2970,14 +2983,17 @@ fn test_create_prompt_tags_and_category_filters() {
         String::from_str(&env, "testing")
     );
 
-    let by_category =
-        client.get_prompts_by_category(&String::from_str(&env, "Software Development"));
-    assert_eq!(by_category.len(), 1);
-    assert_eq!(by_category.get(0).unwrap().id, prompt_id);
+    let by_category = client.get_prompts_by_category_page(
+        &String::from_str(&env, "Software Development"),
+        &None,
+        &50,
+    );
+    assert_eq!(by_category.prompts.len(), 1);
+    assert_eq!(by_category.prompts.get(0).unwrap().id, prompt_id);
 
-    let by_tag = client.get_prompts_by_tag(&String::from_str(&env, "rust"));
-    assert_eq!(by_tag.len(), 1);
-    assert_eq!(by_tag.get(0).unwrap().id, prompt_id);
+    let by_tag = client.get_prompts_by_tag_page(&String::from_str(&env, "rust"), &None, &50);
+    assert_eq!(by_tag.prompts.len(), 1);
+    assert_eq!(by_tag.prompts.get(0).unwrap().id, prompt_id);
 }
 
 #[test]
@@ -3569,7 +3585,7 @@ fn test_buyer_index_records_purchases_deterministically() {
     );
 
     // Buyer index must reflect deterministic insertion order
-    let buyer_prompts = client.get_prompts_by_buyer(&buyer);
+    let buyer_prompts = client.get_prompts_by_buyer_page(&buyer, &None, &50).prompts;
     assert_eq!(buyer_prompts.len(), 3);
     assert_eq!(buyer_prompts.get(0).unwrap().id, prompt_a);
     assert_eq!(buyer_prompts.get(1).unwrap().id, prompt_c);
@@ -3761,4 +3777,540 @@ fn test_dispute_appeal_mechanics() {
     assert_eq!(escrow.state, crate::types::EscrowState::Refunded);
     assert_eq!(xlm_client.balance(&buyer), price);
     assert!(!client.has_access(&buyer, &prompt_id));
+}
+
+// --- Cursor-paginated discovery indexes (#83) ---------------------------
+
+#[test]
+fn test_pagination_at_scale_across_all_discovery_indexes() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    fund_buyer(&xlm_client, &buyer, &context.contract, 5_000_000_000);
+
+    const TOTAL: u32 = 2_000;
+    let category_a = String::from_str(&env, "Software Development");
+    let category_b = String::from_str(&env, "Marketing");
+    let tag_rust = String::from_str(&env, "rust");
+
+    let mut ids: std::vec::Vec<u64> = std::vec::Vec::new();
+    for i in 0..TOTAL {
+        let category = if i % 2 == 0 {
+            category_a.clone()
+        } else {
+            category_b.clone()
+        };
+        let mut tags = Vec::new(&env);
+        if i % 3 == 0 {
+            tags.push_back(tag_rust.clone());
+        }
+        let id = client.create_prompt(
+            &creator,
+            &String::from_str(&env, "https://example.com/prompt.png"),
+            &String::from_str(&env, "Prompt"),
+            &category,
+            &String::from_str(&env, "preview"),
+            &String::from_str(&env, "ciphertext"),
+            &String::from_str(&env, "iv"),
+            &String::from_str(&env, "wrapped-key"),
+            &hash(&env, (i % 250) as u8),
+            &ListingConfig {
+                price: 1_000,
+                asset: context.xlm.clone(),
+                expires_at: 0,
+                splits: Vec::new(&env),
+                tags,
+                max_supply: 0,
+            },
+        );
+        ids.push(id);
+    }
+
+    // Buyer purchases every 10th prompt so the Buyer index has real scale too.
+    let mut bought_count = 0usize;
+    let mut i = 0u32;
+    while i < TOTAL {
+        let id = ids[i as usize];
+        client.buy_prompt(&buyer, &id, &None::<Address>, &1_000i128, &None::<Bytes>);
+        bought_count += 1;
+        i += 10;
+    }
+
+    fn walk_active(
+        client: &PromptHashContractClient,
+    ) -> std::collections::BTreeSet<u64> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut cursor: Option<u64> = None;
+        loop {
+            let page = client.get_active_prompts_page(&cursor, &50);
+            for p in page.prompts.iter() {
+                assert!(seen.insert(p.id), "duplicate id {} in pagination", p.id);
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        seen
+    }
+
+    let seen = walk_active(&client);
+    assert_eq!(seen.len(), TOTAL as usize);
+
+    let mut seen_creator = std::collections::BTreeSet::new();
+    let mut cursor: Option<u64> = None;
+    loop {
+        let page = client.get_prompts_by_creator_page(&creator, &cursor, &50);
+        for p in page.prompts.iter() {
+            assert!(seen_creator.insert(p.id));
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen_creator.len(), TOTAL as usize);
+
+    let mut seen_category = std::collections::BTreeSet::new();
+    let mut cursor: Option<u64> = None;
+    loop {
+        let page = client.get_prompts_by_category_page(&category_a, &cursor, &50);
+        for p in page.prompts.iter() {
+            seen_category.insert(p.id);
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen_category.len(), (TOTAL / 2) as usize);
+
+    let mut seen_tag = std::collections::BTreeSet::new();
+    let mut cursor: Option<u64> = None;
+    loop {
+        let page = client.get_prompts_by_tag_page(&tag_rust, &cursor, &50);
+        for p in page.prompts.iter() {
+            seen_tag.insert(p.id);
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let expected_tagged = (0..TOTAL).filter(|i| i % 3 == 0).count();
+    assert_eq!(seen_tag.len(), expected_tagged);
+
+    let mut seen_buyer = std::collections::BTreeSet::new();
+    let mut cursor: Option<u64> = None;
+    loop {
+        let page = client.get_prompts_by_buyer_page(&buyer, &cursor, &50);
+        for p in page.prompts.iter() {
+            seen_buyer.insert(p.id);
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen_buyer.len(), bought_count);
+}
+
+#[test]
+fn test_active_pagination_gap_closes_when_unvisited_item_delisted_between_pages() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let creator = Address::generate(&env);
+
+    let mut ids: std::vec::Vec<u64> = std::vec::Vec::new();
+    for _ in 0..10 {
+        ids.push(create_prompt(
+            &env,
+            &client,
+            &creator,
+            "Prompt",
+            1_000,
+            &context.xlm,
+        ));
+    }
+
+    let page1 = client.get_active_prompts_page(&None, &3);
+    let page1_ids: std::vec::Vec<u64> = page1.prompts.iter().map(|p| p.id).collect();
+    assert_eq!(page1_ids, std::vec::Vec::from([ids[0], ids[1], ids[2]]));
+    let cursor = page1.next_cursor;
+    assert_eq!(cursor, Some(ids[2]));
+
+    // Delist an item further down the list — not yet visited, not the cursor.
+    client.set_prompt_sale_status(&creator, &ids[5], &false);
+
+    // Resuming from the still-valid cursor must skip the delisted id without
+    // omitting or duplicating any other still-active id.
+    let page2 = client.get_active_prompts_page(&cursor, &3);
+    let page2_ids: std::vec::Vec<u64> = page2.prompts.iter().map(|p| p.id).collect();
+    assert_eq!(page2_ids, std::vec::Vec::from([ids[3], ids[4], ids[6]]));
+
+    let mut seen: std::vec::Vec<u64> = page1_ids;
+    seen.extend(page2_ids);
+    let mut cursor = page2.next_cursor;
+    loop {
+        let page = client.get_active_prompts_page(&cursor, &3);
+        seen.extend(page.prompts.iter().map(|p| p.id));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 9);
+    assert!(!seen.contains(&ids[5]));
+}
+
+#[test]
+fn test_active_pagination_cursor_invalidated_when_anchor_removed() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let creator = Address::generate(&env);
+
+    let id0 = create_prompt(&env, &client, &creator, "First", 1_000, &context.xlm);
+    create_prompt(&env, &client, &creator, "Second", 1_000, &context.xlm);
+
+    let page1 = client.get_active_prompts_page(&None, &1);
+    assert_eq!(page1.next_cursor, Some(id0));
+
+    // Delist the exact item the cursor points at.
+    client.set_prompt_sale_status(&creator, &id0, &false);
+
+    let result = client.try_get_active_prompts_page(&page1.next_cursor, &1);
+    match result {
+        Err(Ok(Error::InvalidCursor)) => {}
+        other => panic!("expected InvalidCursor, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_cursor_tampering_with_fabricated_id_is_rejected() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let creator = Address::generate(&env);
+    create_prompt(&env, &client, &creator, "Only", 1_000, &context.xlm);
+
+    let result = client.try_get_active_prompts_page(&Some(999_999u64), &10);
+    match result {
+        Err(Ok(Error::InvalidCursor)) => {}
+        other => panic!("expected InvalidCursor for fabricated cursor, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_buyer_index_pagination_reflects_transfers_and_refunds() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    let disputing_buyer = Address::generate(&env);
+
+    let transferable = create_prompt(
+        &env,
+        &client,
+        &creator,
+        "Transferable",
+        5_000,
+        &context.xlm,
+    );
+    let disputed = create_prompt(&env, &client, &creator, "Disputed", 6_000, &context.xlm);
+
+    fund_buyer(&xlm_client, &seller, &context.contract, 100_000);
+    client.buy_prompt(
+        &seller,
+        &transferable,
+        &None::<Address>,
+        &5_000i128,
+        &None::<Bytes>,
+    );
+
+    fund_buyer(&xlm_client, &disputing_buyer, &context.contract, 100_000);
+    client.buy_prompt(
+        &disputing_buyer,
+        &disputed,
+        &None::<Address>,
+        &6_000i128,
+        &None::<Bytes>,
+    );
+
+    fund_buyer(&xlm_client, &new_owner, &context.contract, 100_000);
+    client.transfer_license(&seller, &transferable, &new_owner, &10_000i128);
+
+    client.open_dispute(
+        &disputing_buyer,
+        &disputed,
+        &crate::types::DisputeReason::MissingMetadata,
+    );
+    client.resolve_dispute(&context.admin, &disputed, &disputing_buyer, &true);
+
+    assert_eq!(
+        client
+            .get_prompts_by_buyer_page(&seller, &None, &50)
+            .prompts
+            .len(),
+        0
+    );
+    let new_owner_page = client.get_prompts_by_buyer_page(&new_owner, &None, &50);
+    assert_eq!(new_owner_page.prompts.len(), 1);
+    assert_eq!(new_owner_page.prompts.get(0).unwrap().id, transferable);
+    assert_eq!(
+        client
+            .get_prompts_by_buyer_page(&disputing_buyer, &None, &50)
+            .prompts
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn test_revise_listing_moves_prompt_between_category_index_buckets() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let creator = Address::generate(&env);
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
+    let old_category = String::from_str(&env, "Software Development");
+    let new_category = String::from_str(&env, "Marketing");
+
+    assert_eq!(
+        client
+            .get_prompts_by_category_page(&old_category, &None, &50)
+            .prompts
+            .len(),
+        1
+    );
+
+    client.revise_listing(
+        &creator,
+        &prompt_id,
+        &String::from_str(&env, "Prompt"),
+        &new_category,
+        &String::from_str(&env, "preview"),
+        &String::from_str(&env, "https://example.com/prompt.png"),
+        &1_000i128,
+    );
+
+    // No stale entry left under the old category, no duplicate under the new one.
+    assert_eq!(
+        client
+            .get_prompts_by_category_page(&old_category, &None, &50)
+            .prompts
+            .len(),
+        0
+    );
+    let new_page = client.get_prompts_by_category_page(&new_category, &None, &50);
+    assert_eq!(new_page.prompts.len(), 1);
+    assert_eq!(new_page.prompts.get(0).unwrap().id, prompt_id);
+}
+
+#[test]
+fn test_get_prompts_by_ids_rejects_batches_over_max_page_size() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let ids = Vec::from_array(&env, [0u64; 51]);
+    let result = client.try_get_prompts_by_ids(&ids);
+    match result {
+        Err(Ok(Error::TooManyIds)) => {}
+        other => panic!("expected TooManyIds, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_migrate_prompt_indexes_page_is_resumable_and_idempotent() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let creator = Address::generate(&env);
+
+    for _ in 0..12 {
+        create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
+    }
+
+    // Every prompt is already indexed at creation time; migrating over an
+    // already-indexed range must be a resumable no-op that never duplicates.
+    let mut cursor: Option<u64> = None;
+    let mut pages = 0;
+    loop {
+        cursor = client.migrate_prompt_indexes_page(&cursor, &5);
+        pages += 1;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(pages <= 10, "migration did not converge");
+    }
+    assert_eq!(pages, 3); // 12 prompts / 5 per page -> 3 pages (5, 5, 2)
+
+    assert_eq!(client.get_active_prompts_page(&None, &50).prompts.len(), 12);
+    assert_eq!(
+        client
+            .get_prompts_by_creator_page(&creator, &None, &50)
+            .prompts
+            .len(),
+        12
+    );
+
+    // Re-running the whole migration from scratch must not create duplicates.
+    let mut cursor: Option<u64> = None;
+    loop {
+        cursor = client.migrate_prompt_indexes_page(&cursor, &5);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(client.get_active_prompts_page(&None, &50).prompts.len(), 12);
+}
+
+#[test]
+fn test_migrate_buyer_index_page_is_resumable_and_idempotent() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    // Simulate pre-migration on-chain state: five prompts already recorded
+    // in the legacy Vec-based buyer index. The write path that produced this
+    // shape no longer exists in the current contract version, so it is
+    // seeded directly here to exercise the migration path.
+    let mut legacy_ids: Vec<u64> = Vec::new(&env);
+    for i in 0..5 {
+        let id = create_prompt(
+            &env,
+            &client,
+            &creator,
+            "Legacy",
+            1_000 + i as i128,
+            &context.xlm,
+        );
+        legacy_ids.push_back(id);
+    }
+    env.as_contract(&context.contract, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::BuyerPrompts(buyer.clone()), &legacy_ids);
+    });
+
+    // Buyer index starts empty — nothing has migrated yet.
+    assert_eq!(
+        client
+            .get_prompts_by_buyer_page(&buyer, &None, &50)
+            .prompts
+            .len(),
+        0
+    );
+
+    // Interrupted: only the first 2 of 5 entries processed.
+    let cursor = client.migrate_buyer_index_page(&buyer, &None, &2);
+    assert_eq!(cursor, Some(2));
+    assert_eq!(
+        client
+            .get_prompts_by_buyer_page(&buyer, &None, &50)
+            .prompts
+            .len(),
+        2
+    );
+
+    // Retry overlapping the already-migrated range — must not duplicate.
+    let cursor = client.migrate_buyer_index_page(&buyer, &Some(0), &3);
+    assert_eq!(cursor, Some(3));
+    assert_eq!(
+        client
+            .get_prompts_by_buyer_page(&buyer, &None, &50)
+            .prompts
+            .len(),
+        3
+    );
+
+    // Finish the migration.
+    let cursor = client.migrate_buyer_index_page(&buyer, &cursor, &10);
+    assert_eq!(cursor, None);
+    assert_eq!(
+        client
+            .get_prompts_by_buyer_page(&buyer, &None, &50)
+            .prompts
+            .len(),
+        5
+    );
+
+    // Calling again after completion is a safe no-op (legacy key already drained).
+    let cursor = client.migrate_buyer_index_page(&buyer, &None, &10);
+    assert_eq!(cursor, None);
+    assert_eq!(
+        client
+            .get_prompts_by_buyer_page(&buyer, &None, &50)
+            .prompts
+            .len(),
+        5
+    );
+}
+
+#[test]
+fn test_active_prompts_page_cost_is_bounded_independent_of_market_size() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let creator = Address::generate(&env);
+
+    for _ in 0..50 {
+        create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
+    }
+    client.get_active_prompts_page(&None, &50);
+    let small_cost = env.cost_estimate().resources().instructions;
+
+    for _ in 0..950 {
+        create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
+    }
+    client.get_active_prompts_page(&None, &50);
+    let large_cost = env.cost_estimate().resources().instructions;
+
+    // A single page's cost must stay roughly flat as the market grows 20x —
+    // it must never scale with total market size (#83). This assertion is
+    // the resource-snapshot regression guard that `cargo test` (already run
+    // in CI via .github/workflows/contracts.yml) enforces on every PR.
+    assert!(
+        large_cost <= small_cost * 3,
+        "page cost grew with market size: {} -> {} instructions",
+        small_cost,
+        large_cost
+    );
+}
+
+#[test]
+fn test_extend_ttl_page_is_bounded_and_resumable() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let creator = Address::generate(&env);
+
+    for _ in 0..12 {
+        create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
+    }
+
+    let mut cursor: Option<u64> = None;
+    let mut pages = 0;
+    loop {
+        cursor = client.extend_ttl_page(&cursor, &5);
+        pages += 1;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(pages <= 10, "TTL extension did not converge");
+    }
+    assert_eq!(pages, 3);
 }

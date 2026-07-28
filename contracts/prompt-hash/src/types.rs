@@ -50,6 +50,11 @@ pub enum Error {
     DisputeExpired = 44,
     AppealWindowExpired = 45,
     ReviewerThresholdNotMet = 46,
+    /// Pagination cursor does not correspond to a live entry in the requested
+    /// index (fabricated, already-consumed, or removed since it was issued).
+    InvalidCursor = 47,
+    /// Caller-supplied id batch exceeds `MAX_PAGE_SIZE` (#83).
+    TooManyIds = 48,
 }
 
 /// Instance storage keys — contract-level configuration stored in
@@ -73,7 +78,9 @@ pub enum InstanceDataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Prompt(u64),
-    CreatorPrompts(Address),
+    /// Legacy unbounded buyer index (#83). No longer written; retained only
+    /// as the read source for `migrate_buyer_index_page`, which drains and
+    /// then deletes each buyer's entry.
     BuyerPrompts(Address),
     Purchase(u64, Address),
     VoucherKey(u64, BytesN<32>),
@@ -81,6 +88,52 @@ pub enum DataKey {
     PurchaseDispute(u64, Address),
     Escrow(u64, Address),
     Reviewers,
+    /// Head/tail/count for a discovery-index doubly linked list (#83).
+    IndexMeta(IndexScope),
+    /// One node of a discovery-index doubly linked list, keyed by prompt id (#83).
+    IndexNode(IndexScope, u64),
+}
+
+/// Discovery-index dimensions maintained as bounded, cursor-paginated linked
+/// lists (#83). These are rebuildable from canonical `Prompt` state — they
+/// never gate authorization, which always checks `Prompt`/`Purchase` fields
+/// directly.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IndexScope {
+    Active,
+    Creator(Address),
+    Buyer(Address),
+    Category(String),
+    Tag(String),
+}
+
+/// One entry of a discovery-index doubly linked list. Insertion appends at
+/// the tail so pagination yields oldest-first, matching the previous
+/// Vec-based indexes' order.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexNode {
+    pub prev: Option<u64>,
+    pub next: Option<u64>,
+}
+
+/// List-level bookkeeping for a discovery index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexMeta {
+    pub head: Option<u64>,
+    pub tail: Option<u64>,
+    pub count: u64,
+}
+
+/// A bounded page of prompts from a discovery index, plus the cursor to
+/// fetch the next page. `next_cursor` is `None` once the index is exhausted.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PromptPage {
+    pub prompts: Vec<Prompt>,
+    pub next_cursor: Option<u64>,
 }
 
 #[contracttype]
@@ -367,9 +420,28 @@ pub trait PromptHashTrait {
 
     fn has_access(env: Env, user: Address, prompt_id: u64) -> Result<bool, Error>;
     fn get_prompt(env: Env, prompt_id: u64) -> Result<Prompt, Error>;
-    fn get_all_prompts(env: Env) -> Result<Vec<Prompt>, Error>;
-    fn get_prompts_by_category(env: Env, category: String) -> Result<Vec<Prompt>, Error>;
-    fn get_prompts_by_tag(env: Env, tag: String) -> Result<Vec<Prompt>, Error>;
+
+    /// Cursor-paginated listing of currently-active prompts. `cursor` is the
+    /// last id returned by a previous call (or `None` to start from the
+    /// oldest listing); `limit` is clamped to `MAX_PAGE_SIZE`. Every call
+    /// does bounded work independent of total market size (#83).
+    fn get_active_prompts_page(
+        env: Env,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
+    fn get_prompts_by_category_page(
+        env: Env,
+        category: String,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
+    fn get_prompts_by_tag_page(
+        env: Env,
+        tag: String,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
     fn open_dispute(
         env: Env,
         buyer: Address,
@@ -384,8 +456,18 @@ pub trait PromptHashTrait {
         refund: bool,
     ) -> Result<(), Error>;
     fn get_dispute(env: Env, prompt_id: u64, buyer: Address) -> Result<PurchaseDispute, Error>;
-    fn get_prompts_by_creator(env: Env, creator: Address) -> Result<Vec<Prompt>, Error>;
-    fn get_prompts_by_buyer(env: Env, buyer: Address) -> Result<Vec<Prompt>, Error>;
+    fn get_prompts_by_creator_page(
+        env: Env,
+        creator: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
+    fn get_prompts_by_buyer_page(
+        env: Env,
+        buyer: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
     fn set_fee_percentage(env: Env, new_fee_percentage: u32) -> Result<(), Error>;
     fn set_fee_wallet(env: Env, new_fee_wallet: Address) -> Result<(), Error>;
     fn get_fee_percentage(env: Env) -> u32;
@@ -418,9 +500,37 @@ pub trait PromptHashTrait {
 
     fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error>;
     fn extend_ttl(env: Env, key: DataKey) -> Result<(), Error>;
-    /// Bulk-extend TTL for all active storage entries. Intended for periodic
-    /// admin maintenance (#26).
-    fn extend_all_ttl(env: Env) -> Result<(), Error>;
+    /// Extend TTL for a bounded batch of prompts (and their listing
+    /// revisions and discovery-index nodes), starting at `cursor` (or the
+    /// beginning if `None`). Returns the cursor to resume from, or `None`
+    /// once every prompt has been covered. Replaces the old unbounded
+    /// `extend_all_ttl`, which iterated the entire market in one call and
+    /// risked exceeding the CPU budget on `upgrade` as the market grew (#83).
+    fn extend_ttl_page(env: Env, cursor: Option<u64>, limit: u32) -> Result<Option<u64>, Error>;
+
+    /// Resumable, idempotent reindex of a bounded batch of prompts
+    /// (starting at `cursor`, or the beginning if `None`) into the Active,
+    /// Creator, Category, and Tag discovery indexes from their canonical
+    /// `Prompt` fields. Safe to call repeatedly, including after an
+    /// interruption — already-indexed entries are no-ops. Returns the
+    /// cursor to resume from, or `None` once complete (#83).
+    fn migrate_prompt_indexes_page(
+        env: Env,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<Option<u64>, Error>;
+
+    /// Resumable, idempotent migration of one buyer's legacy `BuyerPrompts`
+    /// list into the new Buyer discovery index, processing up to `limit`
+    /// entries starting at `cursor` (or the beginning if `None`). Deletes
+    /// the legacy entry once fully drained. Returns the cursor to resume
+    /// from, or `None` once complete (#83).
+    fn migrate_buyer_index_page(
+        env: Env,
+        buyer: Address,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Result<Option<u32>, Error>;
 
     // Dispute and Escrow resolution methods
     fn submit_evidence(
