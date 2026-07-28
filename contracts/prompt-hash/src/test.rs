@@ -3702,7 +3702,7 @@ fn test_escrow_timeout_releases_funds_to_creator() {
 
     // Warp ledger time past 7-day dispute window (7 * 24 * 3600 = 604,800 secs)
     env.ledger().with_mut(|l| {
-        l.timestamp = l.timestamp + 604_801;
+        l.timestamp += 604_801;
     });
 
     // Resolve timeout
@@ -3761,4 +3761,549 @@ fn test_dispute_appeal_mechanics() {
     assert_eq!(escrow.state, crate::types::EscrowState::Refunded);
     assert_eq!(xlm_client.balance(&buyer), price);
     assert!(!client.has_access(&buyer, &prompt_id));
+}
+
+// ---------- Timelocked multi-party upgrade governance tests (#84) ----------
+
+const UPGRADE_MIN_DELAY: u64 = 2 * 24 * 60 * 60;
+
+/// Registers `count` upgrade signers and sets the approval threshold.
+fn setup_upgrade_signers(
+    env: &Env,
+    client: &PromptHashContractClient,
+    _admin: &Address,
+    count: usize,
+    threshold: u32,
+) -> Vec<Address> {
+    let mut signers = Vec::new(env);
+    for _ in 0..count {
+        let signer = Address::generate(env);
+        client.add_upgrade_signer(&signer);
+        signers.push_back(signer);
+    }
+    client.set_upgrade_threshold(&threshold);
+    signers
+}
+
+fn some_wasm_hash(env: &Env, byte: u8) -> BytesN<32> {
+    hash(env, byte)
+}
+
+#[test]
+fn test_add_remove_upgrade_signers_and_threshold() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
+    assert_eq!(client.get_upgrade_signers().len(), 3);
+    assert_eq!(client.get_upgrade_threshold(), 2);
+
+    let removed = signers.get(0).unwrap();
+    client.remove_upgrade_signer(&removed);
+    assert_eq!(client.get_upgrade_signers().len(), 2);
+
+    let result = client.try_remove_upgrade_signer(&removed);
+    match result {
+        Err(Ok(Error::UpgradeSignerConfigInvalid)) => {}
+        other => panic!("expected UpgradeSignerConfigInvalid, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_requires_registered_signer() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let outsider = Address::generate(&env);
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &outsider,
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::Unauthorized)) => {}
+        other => panic!("expected Unauthorized, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_enforces_minimum_public_timelock() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+
+    // earliest_execution_time only 1 hour out — far short of the minimum delay.
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + 3_600),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_rejects_forged_migration_hash() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let forged_hash = hash(&env, 250);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &forged_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_rejects_non_increasing_schema_version() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    // Genesis schema_version is 0; a forward migration proposing 0 must fail.
+    let migration_hash = client.compute_migration_hash(&target, &0u32);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &0u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_requires_configured_quorum() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    // One signer registered, but threshold set above the signer count.
+    let signer = Address::generate(&env);
+    client.add_upgrade_signer(&signer);
+    client.set_upgrade_threshold(&2u32);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &signer,
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::UpgradeSignerConfigInvalid)) => {}
+        other => panic!("expected UpgradeSignerConfigInvalid, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_single_signer_cannot_meet_quorum() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+
+    env.ledger().with_mut(|l| l.timestamp = earliest);
+    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_execute_upgrade_fails_before_timelock_elapses() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
+
+    // Quorum is met, but the public timelock has not yet elapsed.
+    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_execute_upgrade_fails_after_expiry() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
+
+    env.ledger().with_mut(|l| l.timestamp = expiry + 1);
+    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+
+    // An expired proposal can no longer collect further approvals either.
+    let approve_result = client.try_approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match approve_result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!(
+            "expected UpgradeProposalUnavailable on approve, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_cancel_upgrade_by_proposer_blocks_further_action() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposer = signers.get(0).unwrap();
+    let proposal_id = client.propose_upgrade(
+        &proposer,
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+
+    client.cancel_upgrade(&proposer, &proposal_id);
+
+    let approve_result = client.try_approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
+    match approve_result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+
+    env.ledger().with_mut(|l| l.timestamp = earliest);
+    let execute_result = client.try_execute_upgrade(&proposer, &proposal_id);
+    match execute_result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_cancel_upgrade_by_owner_overrides_proposer() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+
+    client.cancel_upgrade(&context.admin, &proposal_id);
+    let proposal = client.get_upgrade_proposal(&proposal_id);
+    assert!(proposal.cancelled);
+}
+
+#[test]
+fn test_cancel_upgrade_unauthorized_party_fails() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+
+    let outsider = Address::generate(&env);
+    let result = client.try_cancel_upgrade(&outsider, &proposal_id);
+    match result {
+        Err(Ok(Error::Unauthorized)) => {}
+        other => panic!("expected Unauthorized, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_approve_upgrade_rejects_duplicate_and_non_signer() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+
+    let dup_result = client.try_approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match dup_result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+
+    let outsider = Address::generate(&env);
+    let non_signer_result = client.try_approve_upgrade(&outsider, &proposal_id);
+    match non_signer_result {
+        Err(Ok(Error::Unauthorized)) => {}
+        other => panic!("expected Unauthorized, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_signer_rotation_during_proposal_invalidates_stale_approval() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+
+    // Two of three signers approve, reaching the threshold of 2.
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
+
+    // One of the approving signers is rotated out before execution.
+    client.remove_upgrade_signer(&signers.get(1).unwrap());
+
+    env.ledger().with_mut(|l| l.timestamp = earliest);
+    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!(
+            "expected UpgradeProposalUnavailable after signer rotation, got {:?}",
+            other
+        ),
+    }
+
+    // The remaining active signer plus a newly-added one restores quorum.
+    let replacement = Address::generate(&env);
+    client.add_upgrade_signer(&replacement);
+    client.approve_upgrade(&replacement, &proposal_id);
+
+    let proposal = client.get_upgrade_proposal(&proposal_id);
+    // Three approvals recorded in total, but only 2 (signer 0 + replacement)
+    // belong to currently-active signers.
+    assert_eq!(proposal.approvals.len(), 3);
+}
+
+#[test]
+fn test_compute_migration_hash_is_deterministic_and_input_sensitive() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let target = some_wasm_hash(&env, 5);
+    let first = client.compute_migration_hash(&target, &1u32);
+    let second = client.compute_migration_hash(&target, &1u32);
+    assert_eq!(first, second);
+
+    let different_schema = client.compute_migration_hash(&target, &2u32);
+    assert_ne!(first, different_schema);
+
+    let different_target = some_wasm_hash(&env, 6);
+    let different_hash = client.compute_migration_hash(&different_target, &1u32);
+    assert_ne!(first, different_hash);
+}
+
+#[test]
+fn test_marketplace_functions_unaffected_by_pending_upgrade_governance() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price = 100_000_000i128;
+    let prompt_id = create_prompt(
+        &env,
+        &client,
+        &creator,
+        "Governance Safety",
+        price,
+        &context.xlm,
+    );
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
+    let target = some_wasm_hash(&env, 9);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+
+    // Marketplace purchase/access flows work identically while a governance
+    // proposal is pending — the two subsystems share no mutable state.
+    client.buy_prompt(&buyer, &prompt_id, &None, &price, &None);
+    assert!(client.has_access(&buyer, &prompt_id));
+
+    client.cancel_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    assert!(client.has_access(&buyer, &prompt_id));
+    let prompt = client.get_prompt(&prompt_id);
+    assert_eq!(prompt.sales_count, 1);
 }

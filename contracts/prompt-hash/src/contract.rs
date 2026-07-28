@@ -1,8 +1,8 @@
 use super::events::Events;
 use super::storage::{InstanceStorage, Storage};
 use super::types::{
-    DataKey, DisputeReason, DisputeStatus, Error, ListingConfig, ListingRevisionRecord, Prompt,
-    PromptHashTrait, PurchaseDispute, Split, Escrow, EscrowState,
+    DataKey, DisputeReason, DisputeStatus, Error, Escrow, EscrowState, ListingConfig,
+    ListingRevisionRecord, Prompt, PromptHashTrait, PurchaseDispute, Split, UpgradeProposal,
 };
 use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
@@ -24,6 +24,11 @@ const MAX_ACCESS_EXPIRY: u64 = u64::MAX;
 const MAX_SPLITS: u32 = 10;
 const MAX_TAGS: u32 = 8;
 const MAX_TAG_LEN: u32 = 32;
+/// Minimum public delay between an upgrade proposal's creation and the
+/// earliest it may execute (#84). Proposers may set a longer delay, never a
+/// shorter one.
+const MIN_UPGRADE_TIMELOCK_SECS: u64 = 2 * 24 * 60 * 60;
+const MAX_UPGRADE_SIGNERS: u32 = 20;
 
 #[contract]
 pub struct PromptHashContract;
@@ -683,14 +688,300 @@ impl PromptHashTrait for PromptHashContract {
     }
 
     #[only_owner]
-    fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    fn add_upgrade_signer(env: Env, signer: Address) -> Result<(), Error> {
+        let mut signers = Storage::get_upgrade_signers(&env);
+        ensure(
+            signers.len() < MAX_UPGRADE_SIGNERS,
+            Error::UpgradeSignerConfigInvalid,
+        )?;
+        for s in signers.iter() {
+            ensure(s != signer, Error::UpgradeSignerConfigInvalid)?;
+        }
+        signers.push_back(signer.clone());
+        Storage::save_upgrade_signers(&env, &signers);
+        Events::emit_upgrade_signer_added(&env, signer);
+        Ok(())
+    }
+
+    #[only_owner]
+    fn remove_upgrade_signer(env: Env, signer: Address) -> Result<(), Error> {
+        let mut signers = Storage::get_upgrade_signers(&env);
+        let mut index = 0;
+        let mut found = false;
+        while index < signers.len() {
+            if signers.get(index).unwrap() == signer {
+                signers.remove(index);
+                found = true;
+            } else {
+                index += 1;
+            }
+        }
+        ensure(found, Error::UpgradeSignerConfigInvalid)?;
+        Storage::save_upgrade_signers(&env, &signers);
+        Events::emit_upgrade_signer_removed(&env, signer);
+        Ok(())
+    }
+
+    #[only_owner]
+    fn set_upgrade_threshold(env: Env, threshold: u32) -> Result<(), Error> {
+        ensure(threshold > 0, Error::UpgradeSignerConfigInvalid)?;
+        InstanceStorage::set_upgrade_threshold(&env, threshold);
+        Events::emit_upgrade_threshold_updated(&env, threshold);
+        Ok(())
+    }
+
+    fn get_upgrade_signers(env: Env) -> Vec<Address> {
+        Storage::get_upgrade_signers(&env)
+    }
+
+    fn get_upgrade_threshold(env: Env) -> u32 {
+        InstanceStorage::get_upgrade_threshold(&env)
+    }
+
+    fn get_upgrade_epoch(env: Env) -> u32 {
+        InstanceStorage::get_upgrade_epoch(&env)
+    }
+
+    fn get_current_wasm_hash(env: Env) -> Option<BytesN<32>> {
+        InstanceStorage::get_current_wasm_hash(&env)
+    }
+
+    fn get_previous_wasm_hash(env: Env) -> Option<BytesN<32>> {
+        InstanceStorage::get_previous_wasm_hash(&env)
+    }
+
+    fn get_schema_version(env: Env) -> u32 {
+        InstanceStorage::get_schema_version(&env)
+    }
+
+    fn compute_migration_hash(
+        env: Env,
+        target_wasm_hash: BytesN<32>,
+        schema_version: u32,
+    ) -> BytesN<32> {
+        build_migration_hash(&env, &target_wasm_hash, schema_version)
+    }
+
+    fn verify_upgrade_invariants(env: Env) -> Result<(), Error> {
+        check_upgrade_invariants(&env)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn propose_upgrade(
+        env: Env,
+        proposer: Address,
+        target_wasm_hash: BytesN<32>,
+        schema_version: u32,
+        migration_hash: BytesN<32>,
+        earliest_execution_time: u64,
+        expiry_time: u64,
+        is_rollback: bool,
+    ) -> Result<u32, Error> {
+        proposer.require_auth();
+        ensure_upgrade_signer(&env, &proposer)?;
+        check_upgrade_invariants(&env)?;
+
+        let now = env.ledger().timestamp();
+        ensure(
+            earliest_execution_time
+                >= now
+                    .checked_add(MIN_UPGRADE_TIMELOCK_SECS)
+                    .ok_or(Error::ArithmeticOverflow)?,
+            Error::UpgradeBindingMismatch,
+        )?;
+        ensure(
+            expiry_time > earliest_execution_time,
+            Error::UpgradeBindingMismatch,
+        )?;
+
+        let current_schema_version = InstanceStorage::get_schema_version(&env);
+        verify_schema_transition(is_rollback, schema_version, current_schema_version)?;
+
+        if is_rollback {
+            let previous = InstanceStorage::get_previous_wasm_hash(&env);
+            ensure(
+                previous == Some(target_wasm_hash.clone()),
+                Error::UpgradeBindingMismatch,
+            )?;
+        }
+
+        let expected_hash = build_migration_hash(&env, &target_wasm_hash, schema_version);
+        ensure(
+            expected_hash == migration_hash,
+            Error::UpgradeBindingMismatch,
+        )?;
+
+        let id = InstanceStorage::next_upgrade_proposal_id(&env)?;
+        let proposal = UpgradeProposal {
+            id,
+            proposer: proposer.clone(),
+            target_wasm_hash: target_wasm_hash.clone(),
+            expected_current_wasm_hash: InstanceStorage::get_current_wasm_hash(&env),
+            contract_id: env.current_contract_address(),
+            network_id: env.ledger().network_id(),
+            epoch: InstanceStorage::get_upgrade_epoch(&env),
+            schema_version,
+            migration_hash: migration_hash.clone(),
+            is_rollback,
+            earliest_execution_time,
+            expiry_time,
+            created_at: now,
+            approvals: Vec::new(&env),
+            executed: false,
+            cancelled: false,
+        };
+        Storage::save_upgrade_proposal(&env, &proposal);
+
+        Events::emit_upgrade_proposed(
+            &env,
+            id,
+            proposer,
+            target_wasm_hash,
+            schema_version,
+            migration_hash,
+            earliest_execution_time,
+            expiry_time,
+            is_rollback,
+        );
+        Ok(id)
+    }
+
+    fn approve_upgrade(env: Env, signer: Address, proposal_id: u32) -> Result<(), Error> {
+        signer.require_auth();
+        ensure_upgrade_signer(&env, &signer)?;
+
+        let mut proposal = Storage::require_upgrade_proposal(&env, proposal_id)?;
+        ensure(
+            !proposal.executed && !proposal.cancelled,
+            Error::UpgradeProposalUnavailable,
+        )?;
+        let now = env.ledger().timestamp();
+        ensure(
+            now <= proposal.expiry_time,
+            Error::UpgradeProposalUnavailable,
+        )?;
+
+        for approver in proposal.approvals.iter() {
+            ensure(approver != signer, Error::UpgradeProposalUnavailable)?;
+        }
+        proposal.approvals.push_back(signer.clone());
+        let approvals_count = proposal.approvals.len();
+        Storage::save_upgrade_proposal(&env, &proposal);
+
+        Events::emit_upgrade_approved(&env, proposal_id, signer, approvals_count);
+        Ok(())
+    }
+
+    fn cancel_upgrade(env: Env, caller: Address, proposal_id: u32) -> Result<(), Error> {
+        caller.require_auth();
+        let mut proposal = Storage::require_upgrade_proposal(&env, proposal_id)?;
+        ensure(
+            !proposal.executed && !proposal.cancelled,
+            Error::UpgradeProposalUnavailable,
+        )?;
+
+        let owner = ownable::get_owner(&env);
+        let is_owner = owner.as_ref() == Some(&caller);
+        ensure(caller == proposal.proposer || is_owner, Error::Unauthorized)?;
+
+        proposal.cancelled = true;
+        Storage::save_upgrade_proposal(&env, &proposal);
+
+        Events::emit_upgrade_cancelled(&env, proposal_id, caller);
+        Ok(())
+    }
+
+    fn execute_upgrade(env: Env, caller: Address, proposal_id: u32) -> Result<(), Error> {
+        caller.require_auth();
+        let mut proposal = Storage::require_upgrade_proposal(&env, proposal_id)?;
+        ensure(
+            !proposal.executed && !proposal.cancelled,
+            Error::UpgradeProposalUnavailable,
+        )?;
+
+        let now = env.ledger().timestamp();
+        ensure(
+            now >= proposal.earliest_execution_time,
+            Error::UpgradeProposalUnavailable,
+        )?;
+        ensure(
+            now <= proposal.expiry_time,
+            Error::UpgradeProposalUnavailable,
+        )?;
+
+        ensure(
+            proposal.contract_id == env.current_contract_address(),
+            Error::UpgradeBindingMismatch,
+        )?;
+        ensure(
+            proposal.network_id == env.ledger().network_id(),
+            Error::UpgradeBindingMismatch,
+        )?;
+        ensure(
+            proposal.expected_current_wasm_hash == InstanceStorage::get_current_wasm_hash(&env),
+            Error::UpgradeBindingMismatch,
+        )?;
+        ensure(
+            proposal.epoch == InstanceStorage::get_upgrade_epoch(&env),
+            Error::UpgradeBindingMismatch,
+        )?;
+
+        let threshold = InstanceStorage::get_upgrade_threshold(&env);
+        let active_approvals = count_active_approvals(&env, &proposal);
+        ensure(
+            threshold > 0 && active_approvals >= threshold,
+            Error::UpgradeProposalUnavailable,
+        )?;
+
+        let expected_migration_hash =
+            build_migration_hash(&env, &proposal.target_wasm_hash, proposal.schema_version);
+        ensure(
+            expected_migration_hash == proposal.migration_hash,
+            Error::UpgradeBindingMismatch,
+        )?;
+
+        let current_schema_version = InstanceStorage::get_schema_version(&env);
+        verify_schema_transition(
+            proposal.is_rollback,
+            proposal.schema_version,
+            current_schema_version,
+        )?;
+
+        check_upgrade_invariants(&env)?;
+
+        let previous_wasm_hash = InstanceStorage::get_current_wasm_hash(&env);
+        env.deployer()
+            .update_current_contract_wasm(proposal.target_wasm_hash.clone());
+        if let Some(previous) = previous_wasm_hash {
+            InstanceStorage::set_previous_wasm_hash(&env, &previous);
+        }
+        InstanceStorage::set_current_wasm_hash(&env, &proposal.target_wasm_hash);
+        InstanceStorage::set_schema_version(&env, proposal.schema_version);
+        let new_epoch = InstanceStorage::increment_upgrade_epoch(&env)?;
+
         env.storage().instance().extend_ttl(
             super::storage::PERSISTENT_LIFETIME_THRESHOLD,
             super::storage::PERSISTENT_BUMP_AMOUNT,
         );
         Storage::extend_all_ttl(&env);
+
+        proposal.executed = true;
+        let target_wasm_hash = proposal.target_wasm_hash.clone();
+        let schema_version = proposal.schema_version;
+        Storage::save_upgrade_proposal(&env, &proposal);
+
+        Events::emit_upgrade_executed(
+            &env,
+            proposal_id,
+            target_wasm_hash,
+            schema_version,
+            new_epoch,
+        );
         Ok(())
+    }
+
+    fn get_upgrade_proposal(env: Env, proposal_id: u32) -> Result<UpgradeProposal, Error> {
+        Storage::require_upgrade_proposal(&env, proposal_id)
     }
 
     fn extend_ttl(env: Env, key: DataKey) -> Result<(), Error> {
@@ -1270,6 +1561,104 @@ fn ensure(condition: bool, error: Error) -> Result<(), Error> {
         Ok(())
     } else {
         Err(error)
+    }
+}
+
+/// Structural invariants that must hold for any upgrade to be safe: fee/
+/// referral bounds, a reachable dispute-reviewer quorum, and a reachable
+/// upgrade-signer quorum. This is the on-chain "simulate migration" gate —
+/// bounded, deterministic checks rather than an unbounded storage walk, so
+/// it stays safe to run standalone (RPC simulation) and inline before every
+/// mutation (#84).
+fn check_upgrade_invariants(env: &Env) -> Result<(), Error> {
+    let fee_percentage = InstanceStorage::get_fee_percentage(env);
+    ensure(fee_percentage <= MAX_BPS, Error::InvalidFeePercentage)?;
+
+    let referral_percentage = InstanceStorage::get_referral_percentage(env);
+    ensure(
+        referral_percentage <= MAX_BPS,
+        Error::InvalidReferralPercentage,
+    )?;
+
+    let reviewer_threshold = InstanceStorage::get_reviewer_threshold(env);
+    ensure(reviewer_threshold >= 1, Error::ReviewerThresholdNotMet)?;
+
+    let signers = Storage::get_upgrade_signers(env);
+    let threshold = InstanceStorage::get_upgrade_threshold(env);
+    ensure(
+        threshold > 0 && threshold <= signers.len(),
+        Error::UpgradeSignerConfigInvalid,
+    )?;
+    Ok(())
+}
+
+fn ensure_upgrade_signer(env: &Env, signer: &Address) -> Result<(), Error> {
+    let signers = Storage::get_upgrade_signers(env);
+    for s in signers.iter() {
+        if s == *signer {
+            return Ok(());
+        }
+    }
+    Err(Error::Unauthorized)
+}
+
+/// `sha256(target_wasm_hash || schema_version || network_id)`. Anyone who
+/// rebuilds the candidate Wasm and knows the (public) schema version and
+/// network passphrase can reproduce this exact value and compare it against
+/// the on-chain proposal, giving a reproducible, independently-verifiable
+/// migration artifact identity (#84).
+fn build_migration_hash(
+    env: &Env,
+    target_wasm_hash: &BytesN<32>,
+    schema_version: u32,
+) -> BytesN<32> {
+    let mut data = Bytes::new(env);
+    data.append(&Bytes::from_array(env, &target_wasm_hash.to_array()));
+    data.append(&Bytes::from_array(env, &schema_version.to_be_bytes()));
+    data.append(&Bytes::from_array(
+        env,
+        &env.ledger().network_id().to_array(),
+    ));
+    let digest = env.crypto().sha256(&data);
+    BytesN::from_array(env, &digest.to_array())
+}
+
+/// Counts approvals cast by addresses that are still active upgrade signers,
+/// so a signer rotated out after approving no longer counts toward quorum
+/// (and a signer added after approving still doesn't retroactively count
+/// until they approve themselves) (#84).
+fn count_active_approvals(env: &Env, proposal: &UpgradeProposal) -> u32 {
+    let signers = Storage::get_upgrade_signers(env);
+    let mut count: u32 = 0;
+    for approver in proposal.approvals.iter() {
+        for s in signers.iter() {
+            if s == approver {
+                count += 1;
+                break;
+            }
+        }
+    }
+    count
+}
+
+/// Forward migrations must strictly advance the schema version; rollbacks
+/// may only restore a version at or below the current one. Checked both at
+/// proposal time and again at execution time (#84).
+fn verify_schema_transition(
+    is_rollback: bool,
+    schema_version: u32,
+    current_schema_version: u32,
+) -> Result<(), Error> {
+    if is_rollback {
+        ensure(
+            schema_version <= current_schema_version,
+            Error::UpgradeBindingMismatch,
+        )
+    } else {
+        ensure(
+            schema_version > current_schema_version,
+            Error::UpgradeBindingMismatch,
+        )
     }
 }
 
