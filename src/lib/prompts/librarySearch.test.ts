@@ -20,6 +20,9 @@ const mockPrompts: PromptRecord[] = [
     encryptedPrompt: "enc1",
     encryptionIv: "iv1",
     wrappedKey: "key1",
+    imageUrl: "",
+    salesCount: 0,
+    active: true,
   },
   {
     id: 2n,
@@ -33,6 +36,9 @@ const mockPrompts: PromptRecord[] = [
     encryptedPrompt: "enc2",
     encryptionIv: "iv2",
     wrappedKey: "key2",
+    imageUrl: "",
+    salesCount: 0,
+    active: true,
   },
   {
     id: 3n,
@@ -46,6 +52,9 @@ const mockPrompts: PromptRecord[] = [
     encryptedPrompt: "enc3",
     encryptionIv: "iv3",
     wrappedKey: "key3",
+    imageUrl: "",
+    salesCount: 0,
+    active: true,
   },
 ];
 

@@ -5,7 +5,10 @@ import User from "../models/User";
 import Purchase from "../models/Purchase";
 import { IndexerState } from "../models/IndexerState";
 import { scanForSimilarity } from "./similarityDetection";
-import { stellarConfig } from "../config/stellar";
+import { indexPromptProjection } from "./promptSearchIndex";
+import { loadStellarConfig } from "../config/stellar";
+
+const stellarConfig = loadStellarConfig();
 
 const CONTRACT_ID = stellarConfig.PUBLIC_PROMPT_HASH_CONTRACT_ID;
 const rpc = new Server(stellarConfig.PUBLIC_STELLAR_RPC_URL);
