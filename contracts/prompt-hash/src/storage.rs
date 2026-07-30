@@ -2,11 +2,22 @@ use super::types::{
     DataKey, Error, Escrow, InstanceDataKey, ListingRevisionRecord, Prompt, Purchase,
     PurchaseDispute, UpgradeProposal,
 };
-use soroban_sdk::{token, Address, BytesN, Env, Vec};
+use soroban_sdk::{token, Address, BytesN, Env, String, Vec};
 
 pub const DAY_IN_LEDGERS: u32 = 17280;
 pub const PERSISTENT_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 pub const PERSISTENT_LIFETIME_THRESHOLD: u32 = 7 * DAY_IN_LEDGERS;
+/// Hard cap on any single page of discovery-index results, independent of
+/// market size (#83). A `limit` of `0` or greater than this is clamped down.
+pub const MAX_PAGE_SIZE: u32 = 50;
+
+fn clamp_limit(limit: u32) -> u32 {
+    if limit == 0 {
+        MAX_PAGE_SIZE
+    } else {
+        limit.min(MAX_PAGE_SIZE)
+    }
+}
 
 fn ensure(condition: bool, error: Error) -> Result<(), Error> {
     if condition {
@@ -264,131 +275,376 @@ impl Storage {
         Self::extend_key_ttl(env, &key);
     }
 
-    pub fn get_all_prompts(env: &Env) -> Vec<Prompt> {
-        let prompt_count = InstanceStorage::get_prompt_counter(env);
+    // --- Discovery-index primitives (#83) -----------------------------
+    //
+    // Each index (Active / Creator / Buyer / Category / Tag) is a doubly
+    // linked list of `IndexNode`s keyed by `DataKey::IndexNode(scope, id)`,
+    // with head/tail/count bookkeeping in `DataKey::IndexMeta(scope)`.
+    // Insertion appends at the tail (oldest-first, matching the previous
+    // Vec-based indexes' order), and both insert/remove/paginate are O(1)
+    // per hop — no single call ever touches more than a bounded window of
+    // storage entries, independent of how large the market grows. These
+    // indexes are rebuildable discovery state, never a source of
+    // authorization: every auth check reads canonical `Prompt`/`Purchase`
+    // fields directly (see contract.rs), never index membership.
+
+    fn get_index_meta(env: &Env, scope: &IndexScope) -> IndexMeta {
+        env.storage()
+            .persistent()
+            .get(&DataKey::IndexMeta(scope.clone()))
+            .unwrap_or(IndexMeta {
+                head: None,
+                tail: None,
+                count: 0,
+            })
+    }
+
+    fn save_index_meta(env: &Env, scope: &IndexScope, meta: &IndexMeta) {
+        let key = DataKey::IndexMeta(scope.clone());
+        env.storage().persistent().set(&key, meta);
+        Self::extend_key_ttl(env, &key);
+    }
+
+    fn get_index_node(env: &Env, scope: &IndexScope, id: u64) -> Option<IndexNode> {
+        let key = DataKey::IndexNode(scope.clone(), id);
+        let node = env.storage().persistent().get(&key);
+        if env.storage().persistent().has(&key) {
+            Self::extend_key_ttl(env, &key);
+        }
+        node
+    }
+
+    fn save_index_node(env: &Env, scope: &IndexScope, id: u64, node: &IndexNode) {
+        let key = DataKey::IndexNode(scope.clone(), id);
+        env.storage().persistent().set(&key, node);
+        Self::extend_key_ttl(env, &key);
+    }
+
+    /// Idempotent O(1) append. No-op if `id` is already present in `scope`,
+    /// which is what makes migration and re-indexing safe to re-run and
+    /// prevents stale/duplicate entries.
+    pub fn index_insert(env: &Env, scope: &IndexScope, id: u64) {
+        if Self::get_index_node(env, scope, id).is_some() {
+            return;
+        }
+        let mut meta = Self::get_index_meta(env, scope);
+        if let Some(old_tail) = meta.tail {
+            if let Some(mut old_tail_node) = Self::get_index_node(env, scope, old_tail) {
+                old_tail_node.next = Some(id);
+                Self::save_index_node(env, scope, old_tail, &old_tail_node);
+            }
+        }
+        let node = IndexNode {
+            prev: meta.tail,
+            next: None,
+        };
+        meta.tail = Some(id);
+        if meta.head.is_none() {
+            meta.head = Some(id);
+        }
+        meta.count = meta.count.saturating_add(1);
+        Self::save_index_node(env, scope, id, &node);
+        Self::save_index_meta(env, scope, &meta);
+    }
+
+    /// Idempotent O(1) unlink. No-op if `id` is absent from `scope`.
+    pub fn index_remove(env: &Env, scope: &IndexScope, id: u64) {
+        let node = match Self::get_index_node(env, scope, id) {
+            Some(node) => node,
+            None => return,
+        };
+        let mut meta = Self::get_index_meta(env, scope);
+
+        match node.prev {
+            Some(prev_id) => {
+                if let Some(mut prev_node) = Self::get_index_node(env, scope, prev_id) {
+                    prev_node.next = node.next;
+                    Self::save_index_node(env, scope, prev_id, &prev_node);
+                }
+            }
+            None => meta.head = node.next,
+        }
+        match node.next {
+            Some(next_id) => {
+                if let Some(mut next_node) = Self::get_index_node(env, scope, next_id) {
+                    next_node.prev = node.prev;
+                    Self::save_index_node(env, scope, next_id, &next_node);
+                }
+            }
+            None => meta.tail = node.prev,
+        }
+        meta.count = meta.count.saturating_sub(1);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::IndexNode(scope.clone(), id));
+        Self::save_index_meta(env, scope, &meta);
+    }
+
+    /// Bounded, cursor-paginated walk of `scope`, oldest-first. `cursor` must
+    /// be `None` (start from the beginning) or an id previously returned by
+    /// this function; any other value (fabricated, or an id since removed
+    /// from this index) is rejected with `Error::InvalidCursor` rather than
+    /// silently resyncing, so pagination never omits or duplicates entries
+    /// across calls. Every call performs at most `2 * limit + 1` storage
+    /// reads, independent of the index's total size.
+    pub fn index_page(
+        env: &Env,
+        scope: &IndexScope,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<(Vec<u64>, Option<u64>), Error> {
+        let limit = clamp_limit(limit);
+        let mut walk = match cursor {
+            None => Self::get_index_meta(env, scope).head,
+            Some(after) => {
+                let node = Self::get_index_node(env, scope, after).ok_or(Error::InvalidCursor)?;
+                node.next
+            }
+        };
+
+        let mut ids = Vec::new(env);
+        let mut last_id: Option<u64> = None;
+        while let Some(id) = walk {
+            if ids.len() >= limit {
+                break;
+            }
+            ids.push_back(id);
+            last_id = Some(id);
+            walk = Self::get_index_node(env, scope, id).and_then(|node| node.next);
+        }
+
+        let next_cursor = if walk.is_some() { last_id } else { None };
+        Ok((ids, next_cursor))
+    }
+
+    /// Resolves a bounded page of ids from `scope` into full `Prompt`
+    /// records, filtering out listings that have since expired (matching
+    /// the previous `get_all_prompts` behavior). Cost is bounded by `limit`,
+    /// not by market size.
+    fn materialize_page(
+        env: &Env,
+        scope: &IndexScope,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        let (ids, next_cursor) = Self::index_page(env, scope, cursor, limit)?;
         let now = env.ledger().timestamp();
         let mut prompts = Vec::new(env);
-        for prompt_id in 0..prompt_count {
-            if let Some(prompt) = Self::get_prompt(env, prompt_id) {
+        for index in 0..ids.len() {
+            let id = ids.get(index).unwrap();
+            if let Some(prompt) = Self::get_prompt(env, id) {
                 if prompt.expires_at == 0 || prompt.expires_at >= now {
                     prompts.push_back(prompt);
                 }
             }
         }
-        prompts
+        Ok(PromptPage {
+            prompts,
+            next_cursor,
+        })
     }
 
-    pub fn get_prompts_by_category(env: &Env, category: &soroban_sdk::String) -> Vec<Prompt> {
-        let all = Self::get_all_prompts(env);
-        let mut prompts = Vec::new(env);
-        for index in 0..all.len() {
-            let prompt = all.get(index).unwrap();
-            if prompt.category == *category {
-                prompts.push_back(prompt);
-            }
+    pub fn get_active_prompts_page(
+        env: &Env,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        Self::materialize_page(env, &IndexScope::Active, cursor, limit)
+    }
+
+    pub fn get_prompts_by_creator_page(
+        env: &Env,
+        creator: &Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        Self::materialize_page(env, &IndexScope::Creator(creator.clone()), cursor, limit)
+    }
+
+    pub fn get_prompts_by_buyer_page(
+        env: &Env,
+        buyer: &Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        Self::materialize_page(env, &IndexScope::Buyer(buyer.clone()), cursor, limit)
+    }
+
+    pub fn get_prompts_by_category_page(
+        env: &Env,
+        category: &String,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        Self::materialize_page(env, &IndexScope::Category(category.clone()), cursor, limit)
+    }
+
+    pub fn get_prompts_by_tag_page(
+        env: &Env,
+        tag: &String,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        Self::materialize_page(env, &IndexScope::Tag(tag.clone()), cursor, limit)
+    }
+
+    /// Inserts a newly created (or migrated) prompt into every discovery
+    /// index derived from its canonical fields: Active (if `active`),
+    /// Creator, Category, and one entry per tag. Idempotent, so it also
+    /// backs `migrate_prompt_indexes_page`.
+    pub fn sync_discovery_indexes(env: &Env, prompt: &Prompt) {
+        if prompt.active {
+            Self::index_insert(env, &IndexScope::Active, prompt.id);
         }
-        prompts
+        Self::index_insert(env, &IndexScope::Creator(prompt.creator.clone()), prompt.id);
+        Self::index_insert(
+            env,
+            &IndexScope::Category(prompt.category.clone()),
+            prompt.id,
+        );
+        for index in 0..prompt.tags.len() {
+            let tag = prompt.tags.get(index).unwrap();
+            Self::index_insert(env, &IndexScope::Tag(tag), prompt.id);
+        }
     }
 
-    pub fn get_prompts_by_tag(env: &Env, tag: &soroban_sdk::String) -> Vec<Prompt> {
-        let all = Self::get_all_prompts(env);
-        let mut prompts = Vec::new(env);
-        for index in 0..all.len() {
-            let prompt = all.get(index).unwrap();
-            for tag_index in 0..prompt.tags.len() {
-                if prompt.tags.get(tag_index).unwrap() == *tag {
-                    prompts.push_back(prompt.clone());
-                    break;
+    /// Moves a listing in or out of the Active index when its sale status
+    /// changes.
+    pub fn set_active_index(env: &Env, prompt_id: u64, active: bool) {
+        if active {
+            Self::index_insert(env, &IndexScope::Active, prompt_id);
+        } else {
+            Self::index_remove(env, &IndexScope::Active, prompt_id);
+        }
+    }
+
+    /// Moves a listing between Category buckets when `revise_listing`
+    /// changes its category, preventing stale entries under the old value.
+    pub fn reindex_category(env: &Env, prompt_id: u64, old_category: &String, new_category: &String) {
+        if old_category != new_category {
+            Self::index_remove(env, &IndexScope::Category(old_category.clone()), prompt_id);
+            Self::index_insert(env, &IndexScope::Category(new_category.clone()), prompt_id);
+        }
+    }
+
+    pub fn index_buyer_add(env: &Env, buyer: &Address, prompt_id: u64) {
+        Self::index_insert(env, &IndexScope::Buyer(buyer.clone()), prompt_id);
+    }
+
+    pub fn index_buyer_remove(env: &Env, buyer: &Address, prompt_id: u64) {
+        Self::index_remove(env, &IndexScope::Buyer(buyer.clone()), prompt_id);
+    }
+
+    /// Extends TTL for a bounded batch of prompt ids `[cursor, cursor +
+    /// limit)`, along with their listing-revision snapshots and discovery-
+    /// index nodes. Returns the cursor to resume from, or `None` once every
+    /// prompt has been covered. Replaces the old unbounded `extend_all_ttl`.
+    pub fn extend_ttl_page(env: &Env, cursor: Option<u64>, limit: u32) -> Option<u64> {
+        let limit = clamp_limit(limit);
+        let total = InstanceStorage::get_prompt_counter(env);
+        let mut id = cursor.unwrap_or(0);
+        let mut processed = 0u32;
+
+        while id < total && processed < limit {
+            let key = DataKey::Prompt(id);
+            if env.storage().persistent().has(&key) {
+                Self::extend_key_ttl(env, &key);
+                if let Some(prompt) = Self::get_prompt(env, id) {
+                    for revision in 0..=prompt.revision {
+                        let rev_key = DataKey::ListingRevision(id, revision);
+                        if env.storage().persistent().has(&rev_key) {
+                            Self::extend_key_ttl(env, &rev_key);
+                        }
+                    }
+                    if prompt.active {
+                        Self::extend_key_ttl(env, &DataKey::IndexNode(IndexScope::Active, id));
+                    }
+                    Self::extend_key_ttl(
+                        env,
+                        &DataKey::IndexNode(IndexScope::Creator(prompt.creator.clone()), id),
+                    );
+                    Self::extend_key_ttl(
+                        env,
+                        &DataKey::IndexNode(IndexScope::Category(prompt.category.clone()), id),
+                    );
+                    for tag_index in 0..prompt.tags.len() {
+                        let tag = prompt.tags.get(tag_index).unwrap();
+                        Self::extend_key_ttl(env, &DataKey::IndexNode(IndexScope::Tag(tag), id));
+                    }
                 }
             }
+            id += 1;
+            processed += 1;
         }
-        prompts
+
+        if id >= total {
+            None
+        } else {
+            Some(id)
+        }
     }
 
-    pub fn get_prompts_by_creator(env: &Env, creator: &Address) -> Vec<Prompt> {
-        let key = DataKey::CreatorPrompts(creator.clone());
-        let ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(env));
-        if env.storage().persistent().has(&key) {
-            Self::extend_key_ttl(env, &key);
+    /// Resumable, idempotent reindex of prompt ids `[cursor, cursor +
+    /// limit)` into the Active/Creator/Category/Tag indexes, derived purely
+    /// from canonical `Prompt` fields. Returns the cursor to resume from, or
+    /// `None` once complete.
+    pub fn migrate_prompt_indexes_page(env: &Env, cursor: Option<u64>, limit: u32) -> Option<u64> {
+        let limit = clamp_limit(limit);
+        let total = InstanceStorage::get_prompt_counter(env);
+        let mut id = cursor.unwrap_or(0);
+        let mut processed = 0u32;
+
+        while id < total && processed < limit {
+            if let Some(prompt) = Self::get_prompt(env, id) {
+                Self::sync_discovery_indexes(env, &prompt);
+            }
+            id += 1;
+            processed += 1;
         }
-        Self::prompts_from_ids(env, ids)
+
+        if id >= total {
+            None
+        } else {
+            Some(id)
+        }
     }
 
-    pub fn get_prompts_by_buyer(env: &Env, buyer: &Address) -> Vec<Prompt> {
+    /// Resumable, idempotent migration of one buyer's legacy
+    /// `DataKey::BuyerPrompts` list (the old unbounded Vec index) into the
+    /// new Buyer discovery index, processing up to `limit` entries starting
+    /// at `cursor`. Deletes the legacy key once fully drained.
+    pub fn migrate_buyer_index_page(
+        env: &Env,
+        buyer: &Address,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Option<u32> {
+        let limit = clamp_limit(limit);
         let key = DataKey::BuyerPrompts(buyer.clone());
         let ids: Vec<u64> = env
             .storage()
             .persistent()
             .get(&key)
             .unwrap_or_else(|| Vec::new(env));
-        if env.storage().persistent().has(&key) {
-            Self::extend_key_ttl(env, &key);
-        }
-        Self::prompts_from_ids(env, ids)
-    }
+        let total = ids.len();
+        let mut index = cursor.unwrap_or(0);
+        let mut processed = 0u32;
 
-    fn prompts_from_ids(env: &Env, ids: Vec<u64>) -> Vec<Prompt> {
-        let mut prompts = Vec::new(env);
-        for index in 0..ids.len() {
+        while index < total && processed < limit {
             let prompt_id = ids.get(index).unwrap();
-            if let Some(prompt) = Self::get_prompt(env, prompt_id) {
-                prompts.push_back(prompt);
-            }
+            Self::index_buyer_add(env, buyer, prompt_id);
+            index += 1;
+            processed += 1;
         }
-        prompts
-    }
 
-    pub fn add_prompt_to_creator(env: &Env, creator: &Address, prompt_id: u64) {
-        let key = DataKey::CreatorPrompts(creator.clone());
-        let mut ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(env));
-        ids.push_back(prompt_id);
-        env.storage().persistent().set(&key, &ids);
-        Self::extend_key_ttl(env, &key);
-    }
-
-    pub fn add_prompt_to_buyer(env: &Env, buyer: &Address, prompt_id: u64) {
-        let key = DataKey::BuyerPrompts(buyer.clone());
-        let mut ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(env));
-        for index in 0..ids.len() {
-            if ids.get(index).unwrap() == prompt_id {
-                Self::extend_key_ttl(env, &key);
-                return;
+        if index >= total {
+            if env.storage().persistent().has(&key) {
+                env.storage().persistent().remove(&key);
             }
+            None
+        } else {
+            Some(index)
         }
-        ids.push_back(prompt_id);
-        env.storage().persistent().set(&key, &ids);
-        Self::extend_key_ttl(env, &key);
-    }
-
-    pub fn remove_prompt_from_buyer(env: &Env, buyer: &Address, prompt_id: u64) {
-        let key = DataKey::BuyerPrompts(buyer.clone());
-        let mut ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(env));
-        let mut index = 0;
-        while index < ids.len() {
-            if ids.get(index).unwrap() == prompt_id {
-                ids.remove(index);
-            } else {
-                index += 1;
-            }
-        }
-        env.storage().persistent().set(&key, &ids);
-        Self::extend_key_ttl(env, &key);
     }
 
     pub fn get_purchase(env: &Env, prompt_id: u64, buyer: &Address) -> Option<Purchase> {
@@ -441,7 +697,7 @@ impl Storage {
         };
         env.storage().persistent().set(&key, &purchase);
         Self::extend_key_ttl(env, &key);
-        Self::add_prompt_to_buyer(env, buyer, prompt.id);
+        Self::index_buyer_add(env, buyer, prompt.id);
     }
 
     pub fn save_dispute(env: &Env, dispute: &PurchaseDispute) {
@@ -574,37 +830,4 @@ impl Storage {
         record
     }
 
-    pub fn extend_all_ttl(env: &Env) {
-        let prompt_count = InstanceStorage::get_prompt_counter(env);
-        for prompt_id in 0..prompt_count {
-            let key = DataKey::Prompt(prompt_id);
-            if env.storage().persistent().has(&key) {
-                Self::extend_key_ttl(env, &key);
-                let fee_policy_key = DataKey::PromptFeePolicyVersion(prompt_id);
-                if env.storage().persistent().has(&fee_policy_key) {
-                    Self::extend_key_ttl(env, &fee_policy_key);
-                }
-                if let Some(prompt) = Self::get_prompt(env, prompt_id) {
-                    for rev in 0..=prompt.revision {
-                        let rev_key = DataKey::ListingRevision(prompt_id, rev);
-                        if env.storage().persistent().has(&rev_key) {
-                            Self::extend_key_ttl(env, &rev_key);
-                        }
-                    }
-                    let creator_key = DataKey::CreatorPrompts(prompt.creator.clone());
-                    if env.storage().persistent().has(&creator_key) {
-                        Self::extend_key_ttl(env, &creator_key);
-                    }
-                }
-            }
-        }
-
-        let current_version = InstanceStorage::get_current_fee_policy_version(env);
-        for version in 0..=current_version {
-            let key = DataKey::FeePolicyHistory(version);
-            if env.storage().persistent().has(&key) {
-                Self::extend_key_ttl(env, &key);
-            }
-        }
-    }
 }

@@ -1,6 +1,6 @@
 use crate::contract::{PromptHashContract, PromptHashContractClient};
 use crate::mock_asset::FungibleTokenContract;
-use crate::types::{Error, ListingConfig, Split};
+use crate::types::{DataKey, Error, ListingConfig, Split};
 extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -166,9 +166,10 @@ fn test_create_prompt_stores_encrypted_fields() {
     assert_eq!(prompt.expires_at, 0);
     assert_eq!(prompt.splits.len(), 0);
 
-    let all_prompts = client.get_all_prompts();
-    assert_eq!(all_prompts.len(), 1);
-    assert_eq!(all_prompts.get(0).unwrap().id, prompt_id);
+    let page = client.get_active_prompts_page(&None, &50);
+    assert_eq!(page.prompts.len(), 1);
+    assert_eq!(page.prompts.get(0).unwrap().id, prompt_id);
+    assert!(page.next_cursor.is_none());
 }
 
 #[test]
@@ -574,8 +575,14 @@ fn test_get_prompts_by_creator_and_buyer() {
         &None::<Bytes>,
     );
 
-    assert_eq!(client.get_prompts_by_creator(&creator).len(), 2);
-    assert_eq!(client.get_prompts_by_buyer(&buyer).len(), 1);
+    assert_eq!(
+        client.get_prompts_by_creator_page(&creator, &None, &50).prompts.len(),
+        2
+    );
+    assert_eq!(
+        client.get_prompts_by_buyer_page(&buyer, &None, &50).prompts.len(),
+        1
+    );
 }
 
 #[test]
@@ -621,8 +628,14 @@ fn test_license_owner_can_transfer_and_creator_receives_royalty() {
     assert_eq!(xlm_client.balance(&buyer), buyer_before - resale_price);
     assert!(!client.has_access(&seller, &prompt_id));
     assert!(client.has_access(&buyer, &prompt_id));
-    assert_eq!(client.get_prompts_by_buyer(&seller).len(), 0);
-    assert_eq!(client.get_prompts_by_buyer(&buyer).len(), 1);
+    assert_eq!(
+        client.get_prompts_by_buyer_page(&seller, &None, &50).prompts.len(),
+        0
+    );
+    assert_eq!(
+        client.get_prompts_by_buyer_page(&buyer, &None, &50).prompts.len(),
+        1
+    );
 }
 
 #[test]
@@ -1381,8 +1394,8 @@ fn test_read_only_methods_work_when_paused() {
     let prompt = client.get_prompt(&prompt_id);
     assert_eq!(prompt.id, prompt_id);
 
-    let all = client.get_all_prompts();
-    assert_eq!(all.len(), 1);
+    let page = client.get_active_prompts_page(&None, &50);
+    assert_eq!(page.prompts.len(), 1);
 
     assert!(client.has_access(&creator, &prompt_id));
     assert!(client.is_paused());
@@ -2068,7 +2081,7 @@ fn test_create_prompt_with_expiry_stores_expires_at() {
 }
 
 #[test]
-fn test_expired_listing_excluded_from_get_all_prompts() {
+fn test_expired_listing_excluded_from_get_active_prompts_page() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
@@ -2100,12 +2113,12 @@ fn test_expired_listing_excluded_from_get_all_prompts() {
     let persistent = create_prompt(&env, &client, &creator, "Persistent", 5_000, &context.xlm);
 
     // Both visible before expiry
-    assert_eq!(client.get_all_prompts().len(), 2);
+    assert_eq!(client.get_active_prompts_page(&None, &50).prompts.len(), 2);
 
     // Advance time past the first prompt's expiry
     env.ledger().with_mut(|l| l.timestamp = 3_000);
 
-    let visible = client.get_all_prompts();
+    let visible = client.get_active_prompts_page(&None, &50).prompts;
     assert_eq!(visible.len(), 1);
     assert_eq!(visible.get(0).unwrap().id, persistent);
 }
@@ -3028,14 +3041,17 @@ fn test_create_prompt_tags_and_category_filters() {
         String::from_str(&env, "testing")
     );
 
-    let by_category =
-        client.get_prompts_by_category(&String::from_str(&env, "Software Development"));
-    assert_eq!(by_category.len(), 1);
-    assert_eq!(by_category.get(0).unwrap().id, prompt_id);
+    let by_category = client.get_prompts_by_category_page(
+        &String::from_str(&env, "Software Development"),
+        &None,
+        &50,
+    );
+    assert_eq!(by_category.prompts.len(), 1);
+    assert_eq!(by_category.prompts.get(0).unwrap().id, prompt_id);
 
-    let by_tag = client.get_prompts_by_tag(&String::from_str(&env, "rust"));
-    assert_eq!(by_tag.len(), 1);
-    assert_eq!(by_tag.get(0).unwrap().id, prompt_id);
+    let by_tag = client.get_prompts_by_tag_page(&String::from_str(&env, "rust"), &None, &50);
+    assert_eq!(by_tag.prompts.len(), 1);
+    assert_eq!(by_tag.prompts.get(0).unwrap().id, prompt_id);
 }
 
 #[test]
@@ -3627,7 +3643,7 @@ fn test_buyer_index_records_purchases_deterministically() {
     );
 
     // Buyer index must reflect deterministic insertion order
-    let buyer_prompts = client.get_prompts_by_buyer(&buyer);
+    let buyer_prompts = client.get_prompts_by_buyer_page(&buyer, &None, &50).prompts;
     assert_eq!(buyer_prompts.len(), 3);
     assert_eq!(buyer_prompts.get(0).unwrap().id, prompt_a);
     assert_eq!(buyer_prompts.get(1).unwrap().id, prompt_c);

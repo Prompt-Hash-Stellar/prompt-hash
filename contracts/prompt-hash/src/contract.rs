@@ -1,5 +1,5 @@
 use super::events::Events;
-use super::storage::{InstanceStorage, Storage};
+use super::storage::{InstanceStorage, Storage, MAX_PAGE_SIZE};
 use super::types::{
     DataKey, DisputeReason, DisputeStatus, Error, Escrow, EscrowState, ListingConfig,
     ListingRevisionRecord, Prompt, PromptHashTrait, PurchaseDispute, Split, UpgradeProposal,
@@ -119,12 +119,7 @@ impl PromptHashTrait for PromptHashContract {
         };
 
         Storage::save_prompt(&env, &prompt)?;
-        Storage::set_prompt_fee_policy_version(
-            &env,
-            prompt_id,
-            InstanceStorage::get_current_fee_policy_version(&env),
-        );
-        Storage::add_prompt_to_creator(&env, &creator, prompt_id);
+        Storage::sync_discovery_indexes(&env, &prompt);
         Events::emit_prompt_created(&env, prompt_id, creator, listing.price, listing.asset);
         Ok(prompt_id)
     }
@@ -142,6 +137,7 @@ impl PromptHashTrait for PromptHashContract {
 
         prompt.active = active;
         Storage::update_prompt(&env, &prompt);
+        Storage::set_active_index(&env, prompt_id, active);
         Events::emit_prompt_sale_status_updated(&env, prompt_id, active);
         Ok(())
     }
@@ -358,7 +354,7 @@ impl PromptHashTrait for PromptHashContract {
         }
 
         Storage::remove_purchase(&env, prompt_id, &seller);
-        Storage::remove_prompt_from_buyer(&env, &seller, prompt_id);
+        Storage::index_buyer_remove(&env, &seller, prompt_id);
         purchase.owner = new_buyer.clone();
         purchase.last_transfer_price = resale_price;
         purchase.transfer_count = purchase
@@ -367,7 +363,7 @@ impl PromptHashTrait for PromptHashContract {
             .ok_or(Error::ArithmeticOverflow)?;
         purchase.last_transferred_at = now;
         Storage::save_purchase(&env, &purchase);
-        Storage::add_prompt_to_buyer(&env, &new_buyer, prompt_id);
+        Storage::index_buyer_add(&env, &new_buyer, prompt_id);
         InstanceStorage::clear_reentrancy_guard(&env);
 
         Events::emit_license_transferred(
@@ -417,7 +413,6 @@ impl PromptHashTrait for PromptHashContract {
         Storage::save_listing_revision(&env, &snapshot);
 
         prompt.title = title;
-        prompt.category = category;
         prompt.preview_text = preview_text;
         prompt.image_url = image_url;
         prompt.price_stroops = price_stroops;
@@ -425,6 +420,10 @@ impl PromptHashTrait for PromptHashContract {
             .revision
             .checked_add(1)
             .ok_or(Error::ArithmeticOverflow)?;
+
+        let old_category = prompt.category.clone();
+        prompt.category = category;
+        Storage::reindex_category(&env, prompt_id, &old_category, &prompt.category);
 
         Storage::update_prompt(&env, &prompt);
         Events::emit_listing_revised(&env, prompt_id, prompt.revision);
@@ -491,18 +490,32 @@ impl PromptHashTrait for PromptHashContract {
         Storage::require_prompt(&env, prompt_id)
     }
 
-    fn get_all_prompts(env: Env) -> Result<Vec<Prompt>, Error> {
-        Ok(Storage::get_all_prompts(&env))
+    fn get_active_prompts_page(
+        env: Env,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        Storage::get_active_prompts_page(&env, cursor, limit)
     }
 
-    fn get_prompts_by_category(env: Env, category: String) -> Result<Vec<Prompt>, Error> {
+    fn get_prompts_by_category_page(
+        env: Env,
+        category: String,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
         validate_len(&category, MAX_CATEGORY_LEN, Error::InvalidCategoryLength)?;
-        Ok(Storage::get_prompts_by_category(&env, &category))
+        Storage::get_prompts_by_category_page(&env, &category, cursor, limit)
     }
 
-    fn get_prompts_by_tag(env: Env, tag: String) -> Result<Vec<Prompt>, Error> {
+    fn get_prompts_by_tag_page(
+        env: Env,
+        tag: String,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
         validate_len(&tag, MAX_TAG_LEN, Error::InvalidCategoryLength)?;
-        Ok(Storage::get_prompts_by_tag(&env, &tag))
+        Storage::get_prompts_by_tag_page(&env, &tag, cursor, limit)
     }
 
     fn open_dispute(
@@ -582,12 +595,22 @@ impl PromptHashTrait for PromptHashContract {
         Storage::require_dispute(&env, prompt_id, &buyer)
     }
 
-    fn get_prompts_by_creator(env: Env, creator: Address) -> Result<Vec<Prompt>, Error> {
-        Ok(Storage::get_prompts_by_creator(&env, &creator))
+    fn get_prompts_by_creator_page(
+        env: Env,
+        creator: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        Storage::get_prompts_by_creator_page(&env, &creator, cursor, limit)
     }
 
-    fn get_prompts_by_buyer(env: Env, buyer: Address) -> Result<Vec<Prompt>, Error> {
-        Ok(Storage::get_prompts_by_buyer(&env, &buyer))
+    fn get_prompts_by_buyer_page(
+        env: Env,
+        buyer: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error> {
+        Storage::get_prompts_by_buyer_page(&env, &buyer, cursor, limit)
     }
 
     #[only_owner]
@@ -720,6 +743,7 @@ impl PromptHashTrait for PromptHashContract {
     }
 
     fn get_prompts_by_ids(env: Env, prompt_ids: Vec<u64>) -> Result<Vec<Prompt>, Error> {
+        ensure(prompt_ids.len() <= MAX_PAGE_SIZE, Error::TooManyIds)?;
         let mut prompts = Vec::new(&env);
         for i in 0..prompt_ids.len() {
             let id = prompt_ids.get(i).unwrap();
@@ -1092,9 +1116,27 @@ impl PromptHashTrait for PromptHashContract {
     }
 
     #[only_owner]
-    fn extend_all_ttl(env: Env) -> Result<(), Error> {
-        Storage::extend_all_ttl(&env);
-        Ok(())
+    fn extend_ttl_page(env: Env, cursor: Option<u64>, limit: u32) -> Result<Option<u64>, Error> {
+        Ok(Storage::extend_ttl_page(&env, cursor, limit))
+    }
+
+    #[only_owner]
+    fn migrate_prompt_indexes_page(
+        env: Env,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<Option<u64>, Error> {
+        Ok(Storage::migrate_prompt_indexes_page(&env, cursor, limit))
+    }
+
+    #[only_owner]
+    fn migrate_buyer_index_page(
+        env: Env,
+        buyer: Address,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Result<Option<u32>, Error> {
+        Ok(Storage::migrate_buyer_index_page(&env, &buyer, cursor, limit))
     }
 
     fn submit_evidence(
@@ -1893,7 +1935,7 @@ fn execute_resolution_transfer(env: &Env, escrow: &mut Escrow, refund: bool) -> 
         asset_client.transfer(&env.current_contract_address(), &escrow.buyer, &transfer_price);
 
         Storage::remove_purchase(env, escrow.prompt_id, &escrow.buyer);
-        Storage::remove_prompt_from_buyer(env, &escrow.buyer, escrow.prompt_id);
+        Storage::index_buyer_remove(env, &escrow.buyer, escrow.prompt_id);
         
         Events::emit_escrow_refunded(env, escrow.prompt_id, escrow.buyer.clone());
     } else {
