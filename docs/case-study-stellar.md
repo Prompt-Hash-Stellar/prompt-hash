@@ -84,7 +84,7 @@ Every multiplication, addition, and subtraction in fee calculations uses Rust's 
 
 ### Emergency Circuit Breaker
 
-An owner-controlled pause mechanism blocks all state-mutating operations (create, buy, lease, update) while allowing read-only queries (get_prompt, has_access, get_all_prompts) to continue. This enables rapid response to discovered vulnerabilities without destroying the ability to query existing data.
+An owner-controlled pause mechanism blocks all state-mutating operations (create, buy, lease, update) while allowing read-only queries (get_prompt, has_access, get_active_prompts_page) to continue. This enables rapid response to discovered vulnerabilities without destroying the ability to query existing data.
 
 ## Architecture
 

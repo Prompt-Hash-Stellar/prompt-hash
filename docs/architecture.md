@@ -22,9 +22,9 @@ Core contract methods:
 - `buy_prompt`
 - `has_access`
 - `get_prompt`
-- `get_all_prompts`
-- `get_prompts_by_creator`
-- `get_prompts_by_buyer`
+- `get_active_prompts_page` (cursor-paginated, bounded regardless of market size — #83)
+- `get_prompts_by_creator_page`
+- `get_prompts_by_buyer_page`
 - `update_prompt_price`
 - `set_prompt_sale_status`
 - `set_fee_percentage`

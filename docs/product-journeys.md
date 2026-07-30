@@ -109,7 +109,7 @@ Creator
 
 ### Step 1 — Browse listings
 
-The buyer visits `/browse`. The frontend reads all active prompt listings directly from the Soroban contract using `get_all_prompts`. Each card shows the public metadata: image, title, category, preview text, and price.
+The buyer visits `/browse`. The frontend reads active prompt listings directly from the Soroban contract page by page using `get_active_prompts_page`, requesting more pages via the returned cursor as needed. Each card shows the public metadata: image, title, category, preview text, and price.
 
 **Component:** `src/pages/browse/FetchAllPrompts.tsx`, `src/pages/browse/PromptCard.tsx`
 
@@ -201,7 +201,7 @@ Understanding which layer owns which responsibility helps contributors find the 
 
 - Stores all prompt metadata and encrypted payload on-chain
 - Enforces purchase rights and XLM fee splits
-- Exposes read methods (`get_prompt`, `has_access`, `get_all_prompts`) used by both frontend and unlock service
+- Exposes read methods (`get_prompt`, `has_access`, `get_active_prompts_page`) used by both frontend and unlock service
 - Does **not** handle encryption, decryption, or wallet signature verification
 
 ### Frontend (`src/`)

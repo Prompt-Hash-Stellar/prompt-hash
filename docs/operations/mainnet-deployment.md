@@ -90,7 +90,7 @@ stellar contract invoke \
     --source your_admin_alias \
     --network mainnet \
     -- \
-    get_all_prompts
+    get_active_prompts_page --limit 50
 ```
 
 ### 6. Deploy Frontend
