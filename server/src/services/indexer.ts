@@ -5,6 +5,7 @@ import User from "../models/User";
 import Purchase from "../models/Purchase";
 import { IndexerState } from "../models/IndexerState";
 import { scanForSimilarity } from "./similarityDetection";
+import { indexPromptProjection } from "./promptSearchIndex";
 import { stellarConfig } from "../config/stellar";
 
 const CONTRACT_ID = stellarConfig.PUBLIC_PROMPT_HASH_CONTRACT_ID;
