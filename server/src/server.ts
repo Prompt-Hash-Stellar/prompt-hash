@@ -22,6 +22,8 @@ import {
   chatLimiter,
 } from "./middleware/rateLimiter";
 // import { startIndexer } from "./services/indexerService"; // TODO: Update path when ready
+import { runMigrations } from "./db/migrationRunner";
+
 
 // ── Sentry backend monitoring (#332) ─────────────────────────────────────────
 // Set SENTRY_DSN in the server .env to enable exception capture.
@@ -96,26 +98,33 @@ if (process.env.SENTRY_DSN) {
   }
 }
 
-app.listen(port, () => {
-  console.log(`Listening on port ${port}`);
+runMigrations("up")
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`Listening on port ${port}`);
 
-  // STARTS THE INDEXER HERE
-  // startIndexer().catch((err: any) => {
-  //   console.error("Failed to start Soroban Indexer:", err);
-  // });
+      // STARTS THE INDEXER HERE
+      // startIndexer().catch((err: any) => {
+      //   console.error("Failed to start Soroban Indexer:", err);
+      // });
 
-  // DAILY AUTOMATED BACKUP — runs immediately on startup then every 24 h.
-  // Use BACKUP_S3_BUCKET env var to enable; silently skips if not configured.
-  if (process.env.BACKUP_S3_BUCKET) {
-    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
-    const triggerBackup = () => {
-      runBackup().catch((err) => {
-        console.error("[backup] Scheduled backup failed:", err?.message ?? err);
-      });
-    };
-    // Run once on startup, then on a 24-hour interval.
-    triggerBackup();
-    setInterval(triggerBackup, TWENTY_FOUR_HOURS);
-    console.log("[backup] Daily backup scheduler started.");
-  }
-});
+      // DAILY AUTOMATED BACKUP — runs immediately on startup then every 24 h.
+      // Use BACKUP_S3_BUCKET env var to enable; silently skips if not configured.
+      if (process.env.BACKUP_S3_BUCKET) {
+        const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+        const triggerBackup = () => {
+          runBackup().catch((err) => {
+            console.error("[backup] Scheduled backup failed:", err?.message ?? err);
+          });
+        };
+        // Run once on startup, then on a 24-hour interval.
+        triggerBackup();
+        setInterval(triggerBackup, TWENTY_FOUR_HOURS);
+        console.log("[backup] Daily backup scheduler started.");
+      }
+    });
+  })
+  .catch((err) => {
+    console.error("❌ Database migration failed on startup. Server will not start.", err);
+    process.exit(1);
+  });
