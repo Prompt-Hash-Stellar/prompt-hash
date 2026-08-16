@@ -14,7 +14,9 @@ export type AuditAction =
   | "kms_key_rotated"
   | "kms_break_glass_triggered"
   | "kms_key_revoked"
-  | "kms_key_suspended";
+  | "kms_key_suspended"
+  | "report_review_access"
+  | "report_review_denied";
 
 export type AuditResult = "success" | "failure" | "blocked";
 
@@ -37,6 +39,8 @@ const auditLogSchema = new mongoose.Schema(
         "kms_break_glass_triggered",
         "kms_key_revoked",
         "kms_key_suspended",
+        "report_review_access",
+        "report_review_denied",
       ] as AuditAction[],
       index: true,
     },
@@ -88,36 +92,33 @@ const auditLogSchema = new mongoose.Schema(
 );
 
 // Hash chaining middleware for tamper-evident audit logs
-auditLogSchema.pre("save", async function (next) {
-  try {
-    const latestDoc = await (this.constructor as any)
-      .findOne()
-      .sort({ createdAt: -1 });
+// Mongoose 9 pre('save') middleware no longer receives a `next` callback;
+// errors propagate by rejecting the returned promise.
+auditLogSchema.pre("save", async function () {
+  const latestDoc = await (this.constructor as any)
+    .findOne()
+    .sort({ createdAt: -1 });
 
-    const prevHash = latestDoc ? latestDoc.hash || "" : "0".repeat(64);
-    this.set("previousHash", prevHash);
+  const prevHash = latestDoc ? latestDoc.hash || "" : "0".repeat(64);
+  this.set("previousHash", prevHash);
 
-    const fieldsToHash = [
-      this.get("action") || "",
-      this.get("result") || "",
-      this.get("promptId") || "",
-      this.get("walletAddress") || "",
-      this.get("requestId") || "",
-      this.get("clientIp") || "",
-      this.get("reason") || "",
-      prevHash,
-    ];
+  const fieldsToHash = [
+    this.get("action") || "",
+    this.get("result") || "",
+    this.get("promptId") || "",
+    this.get("walletAddress") || "",
+    this.get("requestId") || "",
+    this.get("clientIp") || "",
+    this.get("reason") || "",
+    prevHash,
+  ];
 
-    const currentHash = crypto
-      .createHash("sha256")
-      .update(fieldsToHash.join("|"))
-      .digest("hex");
+  const currentHash = crypto
+    .createHash("sha256")
+    .update(fieldsToHash.join("|"))
+    .digest("hex");
 
-    this.set("hash", currentHash);
-    next();
-  } catch (err: any) {
-    next(err);
-  }
+  this.set("hash", currentHash);
 });
 
 // Compound indexes for common incident-review queries.
