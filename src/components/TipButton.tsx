@@ -6,7 +6,7 @@ import { browserStellarConfig } from "@/lib/stellar/browserConfig";
 import { approveNativeAssetSpend } from "@/lib/stellar/nativeAssetClient";
 import { xlmToStroops } from "@/lib/stellar/format";
 
-const PRESET_AMOUNTS = [1, 3, 5, 10];
+const PRESET_AMOUNTS = ["1", "3", "5", "10"];
 
 export interface TipButtonProps {
   creatorAddress: string;
@@ -16,17 +16,25 @@ export interface TipButtonProps {
 
 export function TipButton({ creatorAddress, onTipSent }: TipButtonProps) {
   const { address, signTransaction } = useWallet();
-  const [amount, setAmount] = useState(1);
+  const [amount, setAmount] = useState("1");
   const [sending, setSending] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const hasValidAmount = (() => {
+    try {
+      return xlmToStroops(amount) > 0n;
+    } catch {
+      return false;
+    }
+  })();
 
   const canTip =
     Boolean(address) &&
     Boolean(signTransaction) &&
     Boolean(creatorAddress) &&
     address !== creatorAddress &&
-    amount > 0;
+    hasValidAmount;
 
   const handleTip = async () => {
     if (!address || !signTransaction) return;
@@ -45,7 +53,7 @@ export function TipButton({ creatorAddress, onTipSent }: TipButtonProps) {
         Math.floor(Date.now() / 5000) + 60,
       );
       setSuccess(true);
-      onTipSent?.(amount.toString());
+      onTipSent?.(amount);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to send tip.");
     } finally {
@@ -85,10 +93,11 @@ export function TipButton({ creatorAddress, onTipSent }: TipButtonProps) {
         ))}
         <input
           type="number"
-          min={1}
+          min="0.0000001"
           max={1000}
+          step="0.0000001"
           value={amount}
-          onChange={(e) => setAmount(Math.max(1, Number(e.target.value)))}
+          onChange={(e) => setAmount(e.target.value)}
           className="w-20 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-xs text-slate-200 focus:border-emerald-500/50 focus:outline-none"
           aria-label="Custom tip amount in XLM"
         />
