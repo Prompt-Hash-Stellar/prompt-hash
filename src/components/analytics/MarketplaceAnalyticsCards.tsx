@@ -3,7 +3,7 @@ import { TrendingUp, Package, ShoppingCart, Coins } from "lucide-react";
 import { Skeleton } from "@/components/Skeleton";
 import { getAllPrompts } from "@/lib/stellar/promptHashClient";
 import { browserStellarConfig } from "@/lib/stellar/browserConfig";
-import { stroopsToXlmString } from "@/lib/stellar/format";
+import { formatStroopsToFixedXlm } from "@/lib/stellar/format";
 
 interface AnalyticsCardProps {
   title: string;
@@ -86,10 +86,10 @@ export const MarketplaceAnalyticsCards: React.FC = () => {
     totalListings: prompts?.length ?? 0,
     activeListings: prompts?.filter((p) => p.active).length ?? 0,
     totalSales: prompts?.reduce((sum, p) => sum + p.salesCount, 0) ?? 0,
-    estimatedVolume: prompts?.reduce(
-      (sum, p) => sum + Number(stroopsToXlmString(p.priceStroops)) * p.salesCount,
-      0
-    ) ?? 0,
+    estimatedVolumeStroops: prompts?.reduce(
+      (sum, p) => sum + p.priceStroops * BigInt(p.salesCount),
+      0n
+    ) ?? 0n,
   };
 
   const isUnavailable = isError || (!isLoading && prompts?.length === 0);
@@ -122,7 +122,7 @@ export const MarketplaceAnalyticsCards: React.FC = () => {
       />
       <AnalyticsCard
         title="Volume (XLM)"
-        value={analytics.estimatedVolume.toFixed(2)}
+        value={formatStroopsToFixedXlm(analytics.estimatedVolumeStroops, 2)}
         icon={<Coins className="h-5 w-5 text-amber-400" />}
         description="Estimated marketplace volume"
         isLoading={isLoading}

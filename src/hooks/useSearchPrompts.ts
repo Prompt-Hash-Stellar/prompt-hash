@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { PromptRecord } from "@/lib/stellar/promptHashClient";
+import { xlmToStroops } from "@/lib/stellar/format";
 
 interface SearchFilters {
   query?: string;
@@ -61,7 +62,7 @@ export function useSearchPrompts(filters: SearchFilters, enabled = true) {
         const transformedPrompts: PromptRecord[] = data.prompts.map((p: any) => ({
           id: BigInt(p.onChainId || p._id),
           creator: p.owner?.walletAddress || p.creator || "Unknown",
-          priceStroops: BigInt(Math.floor((p.price || 0) * 10_000_000)),
+          priceStroops: xlmToStroops(String(p.price ?? 0)),
           title: p.title,
           category: p.category,
           previewText: p.content?.slice(0, 200) || "",
@@ -105,20 +106,29 @@ export function useSearchPrompts(filters: SearchFilters, enabled = true) {
         }
         
         if (minPrice !== undefined || maxPrice !== undefined) {
+          const minimumStroops = minPrice === undefined
+            ? undefined
+            : xlmToStroops(String(minPrice));
+          const maximumStroops = maxPrice === undefined
+            ? undefined
+            : xlmToStroops(String(maxPrice));
           filtered = filtered.filter((p) => {
-            const price = Number(p.priceStroops) / 10_000_000;
-            return (minPrice === undefined || price >= minPrice) &&
-                   (maxPrice === undefined || price <= maxPrice);
+            return (minimumStroops === undefined || p.priceStroops >= minimumStroops) &&
+                   (maximumStroops === undefined || p.priceStroops <= maximumStroops);
           });
         }
         
         // Apply sorting
         switch (sortBy) {
           case "price-low":
-            filtered.sort((a, b) => Number(a.priceStroops - b.priceStroops));
+            filtered.sort((a, b) => a.priceStroops === b.priceStroops
+              ? 0
+              : a.priceStroops < b.priceStroops ? -1 : 1);
             break;
           case "price-high":
-            filtered.sort((a, b) => Number(b.priceStroops - a.priceStroops));
+            filtered.sort((a, b) => a.priceStroops === b.priceStroops
+              ? 0
+              : a.priceStroops > b.priceStroops ? -1 : 1);
             break;
           case "sales":
             filtered.sort((a, b) => b.salesCount - a.salesCount);

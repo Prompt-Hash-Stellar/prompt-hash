@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { browserStellarConfig } from "@/lib/stellar/browserConfig";
 import { getPrompt } from "@/lib/stellar/promptHashClient";
-import { formatPriceLabel } from "@/lib/stellar/format";
+import { formatPriceLabel, formatStroopsToFixedXlm } from "@/lib/stellar/format";
 import { copyToClipboard } from "@/lib/clipboard/secureClipboard";
 import { usePageMeta } from "@/lib/seo/usePageMeta";
 import { MarkdownContent } from "@/components/MarkdownContent";
@@ -66,7 +66,7 @@ export default function PromptDetailPage() {
     image: prompt.imageUrl || `${window.location.origin}${FALLBACK_IMAGE}`,
     offers: {
       "@type": "Offer",
-      price: (Number(prompt.priceStroops) / 10000000).toFixed(2),
+      price: formatStroopsToFixedXlm(prompt.priceStroops, 2),
       priceCurrency: "XLM",
       availability: prompt.active ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
     },
