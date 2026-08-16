@@ -4,6 +4,8 @@ import WebhookSubscription from "../../server/src/models/WebhookSubscription";
 import { ALLOWED_EVENTS } from "../../server/src/services/webhookDispatcher";
 import { randomBytes } from "crypto";
 
+import { validateWebhookUrl } from "../../server/src/services/ssrfProtection";
+
 async function handler(req: any, res: any) {
   await connectDb();
 
@@ -30,10 +32,9 @@ async function handler(req: any, res: any) {
       res.status(400).json({ error: "walletAddress and url are required." });
       return;
     }
-    try {
-      new URL(url);
-    } catch {
-      res.status(400).json({ error: "url must be a valid URL." });
+    const ssrfCheck = await validateWebhookUrl(url);
+    if (!ssrfCheck.valid) {
+      res.status(400).json({ error: "Invalid or blocked webhook destination URL." });
       return;
     }
 
