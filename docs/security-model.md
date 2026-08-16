@@ -137,3 +137,20 @@ When adding a new external service:
 3. Run `vitest run src/test/security-headers.test.ts` to verify the test still passes
 4. Update this document's policy table
 5. Test the affected flow in browser devtools (Network and Console tabs)
+
+---
+
+## AI Proxy Logging Privacy (Issue #159)
+
+Prompt text submitted to the improve-proxy and chat-proxy endpoints, and all
+model-generated response content, are classified as **sensitive data**. Neither
+must appear in application logs, error events, or telemetry records.
+
+Application logs for proxy operations are limited to operational metadata:
+request correlation ID, request/response size in bytes, latency, HTTP status
+code, and a safe internal error code. Upstream error bodies are never logged or
+forwarded to clients.
+
+See [`docs/proxy-logging-policy.md`](./proxy-logging-policy.md) for the full
+classification table, allowed telemetry fields, prohibited content, safe
+error-handling rules, and log-retention guidance.
