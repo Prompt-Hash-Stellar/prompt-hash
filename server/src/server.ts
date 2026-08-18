@@ -13,7 +13,7 @@ import searchRouter from "./routes/searchRoutes";
 import { fulfillmentRouter } from "./routes/fulfillmentRoutes";
 import { reconciliationRouter } from "./routes/reconciliationRoutes";
 import { reviewRouter } from "./routes/reviewRoutes";
-import { runBackup, getBackupHealth } from "./services/backupService";
+import { getBackupHealth } from "./services/backupService";
 import { IndexerState } from "./models/IndexerState";
 import {
   globalLimiter,
@@ -21,6 +21,7 @@ import {
   strictLimiter,
   chatLimiter,
 } from "./middleware/rateLimiter";
+import { corsMiddleware, securityHeaders, configureTrustedProxy } from "./middleware/security";
 // import { startIndexer } from "./services/indexerService"; // TODO: Update path when ready
 
 // ── Sentry backend monitoring (#332) ─────────────────────────────────────────
@@ -37,28 +38,51 @@ const app = express();
 
 const port = 5000;
 
+// ── Trusted proxy configuration ──────────────────────────────────────────────
+// Must be set before anything reads req.ip (rate limiters, CORS, logging) so
+// client IPs are derived from only the configured number of trusted
+// X-Forwarded-For hops instead of a spoofable header. See
+// middleware/security.ts and docs/security-model.md.
+configureTrustedProxy(app);
+
+// ── Defensive headers & CORS ─────────────────────────────────────────────────
+// Registered before body parsing / routes so every response - including
+// rejected/oversized requests - carries the hardened headers, and so
+// disallowed origins never reach the API handlers.
+app.use(securityHeaders());
+app.use(corsMiddleware());
+
 // Sentry error handler should be registered after routes (#332).
-app.use(express.json());
+// Bounded JSON body limits per route class: a conservative default for
+// most JSON APIs, with a larger budget for the routes that carry prompt
+// content (create/update/version), which can legitimately be large. Each
+// route class gets its own express.json() instance (rather than one
+// global parser plus per-route overrides) because body-parser can only
+// consume the request stream once - a second express.json() on the same
+// request is a no-op, so the limit that matters is whichever one runs
+// first per route.
+const promptContentJsonLimit = express.json({ limit: "2mb" });
+const defaultJsonLimit = express.json({ limit: "100kb" });
 
 // ── Rate limiting ────────────────────────────────────────────────────────────
 // Global rate limit: 100 requests per 15 minutes per IP.
 app.use(globalLimiter);
 
-app.use("/api/improve-proxy", strictLimiter, proxyrouter);
+app.use("/api/improve-proxy", defaultJsonLimit, strictLimiter, proxyrouter);
 
-app.use("/api/prompts", promptRouter);
+app.use("/api/prompts", promptContentJsonLimit, promptRouter);
 
-app.use("/api/user", authLimiter, userRouter);
+app.use("/api/user", defaultJsonLimit, authLimiter, userRouter);
 
-app.use("/api/chat", chatLimiter, chatRouter);
-app.use("/api/webhooks", strictLimiter, webhookRouter);
-app.use("/api/versions", versioningRouter);
-app.use("/api/governance", authLimiter, governanceRouter); // Issue #113
-app.use("/api/search", searchRouter);
-app.use("/api/fulfillment", strictLimiter, fulfillmentRouter);
-app.use("/api/reviews", reviewRouter);
+app.use("/api/chat", defaultJsonLimit, chatLimiter, chatRouter);
+app.use("/api/webhooks", defaultJsonLimit, strictLimiter, webhookRouter);
+app.use("/api/versions", promptContentJsonLimit, versioningRouter);
+app.use("/api/governance", defaultJsonLimit, authLimiter, governanceRouter); // Issue #113
+app.use("/api/search", defaultJsonLimit, searchRouter);
+app.use("/api/fulfillment", defaultJsonLimit, strictLimiter, fulfillmentRouter);
+app.use("/api/reviews", defaultJsonLimit, reviewRouter);
 
-app.post("/api/test-prompt", strictLimiter, TestPromptProxy);
+app.post("/api/test-prompt", defaultJsonLimit, strictLimiter, TestPromptProxy);
 
 app.get("/health", async (req, res) => {
   const [state, backupHealth] = await Promise.all([
@@ -96,6 +120,24 @@ if (process.env.SENTRY_DSN) {
   }
 }
 
+// Final JSON error handler: catches CORS rejections (disallowed origin),
+// oversized-body errors from express.json(), and anything else forwarded
+// via next(err), so clients always get a clean JSON error instead of
+// Express's default HTML error page.
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (res.headersSent) {
+    return;
+  }
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "Request body too large" });
+  }
+  if (typeof err?.message === "string" && err.message.includes("not allowed by CORS policy")) {
+    return res.status(403).json({ error: "Origin not allowed" });
+  }
+  console.error("Unhandled request error:", err?.message ?? err);
+  return res.status(500).json({ error: "Internal server error" });
+});
+
 app.listen(port, () => {
   console.log(`Listening on port ${port}`);
 
@@ -104,18 +146,6 @@ app.listen(port, () => {
   //   console.error("Failed to start Soroban Indexer:", err);
   // });
 
-  // DAILY AUTOMATED BACKUP — runs immediately on startup then every 24 h.
-  // Use BACKUP_S3_BUCKET env var to enable; silently skips if not configured.
-  if (process.env.BACKUP_S3_BUCKET) {
-    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
-    const triggerBackup = () => {
-      runBackup().catch((err) => {
-        console.error("[backup] Scheduled backup failed:", err?.message ?? err);
-      });
-    };
-    // Run once on startup, then on a 24-hour interval.
-    triggerBackup();
-    setInterval(triggerBackup, TWENTY_FOUR_HOURS);
-    console.log("[backup] Daily backup scheduler started.");
-  }
+  // Backups are scheduled only by backup.crontab. runBackup itself also takes a
+  // MongoDB lease, so overlapping cron/container invocations cannot run twice.
 });

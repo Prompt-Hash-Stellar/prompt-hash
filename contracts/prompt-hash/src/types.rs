@@ -50,11 +50,22 @@ pub enum Error {
     DisputeExpired = 44,
     AppealWindowExpired = 45,
     ReviewerThresholdNotMet = 46,
-    /// Pagination cursor does not correspond to a live entry in the requested
-    /// index (fabricated, already-consumed, or removed since it was issued).
-    InvalidCursor = 47,
-    /// Caller-supplied id batch exceeds `MAX_PAGE_SIZE` (#83).
-    TooManyIds = 48,
+    /// Upgrade-signer set or threshold is misconfigured (duplicate/unknown
+    /// signer, too many signers, or a threshold unreachable given the
+    /// current signer count) (#84). Signer-membership auth failures use
+    /// `Unauthorized` instead — this is a *configuration* error.
+    UpgradeSignerConfigInvalid = 47,
+    /// An upgrade proposal cannot accept the requested action right now:
+    /// not found, already executed/cancelled, already approved by this
+    /// signer, outside its public-timelock execution window, or short of
+    /// quorum (#84).
+    UpgradeProposalUnavailable = 48,
+    /// A binding recorded on the proposal no longer matches reality:
+    /// wrong contract/network, a stale current-wasm-hash/epoch (another
+    /// upgrade already executed), a forged migration hash, an
+    /// incompatible schema transition, or an invalid rollback target or
+    /// timelock window (#84).
+    UpgradeBindingMismatch = 49,
 }
 
 /// Instance storage keys — contract-level configuration stored in
@@ -70,11 +81,12 @@ pub enum InstanceDataKey {
     ReferralPercentage,
     IsPaused,
     ReviewerThreshold,
-    /// Currently active fee-policy version (#82). Defaults to `0` — the
-    /// pre-governance baseline read from `FeePercentage`/`ReferralPercentage`.
-    FeePolicyVersion,
-    /// A proposed fee-policy change awaiting its timelock (#82).
-    PendingFeePolicy,
+    UpgradeThreshold,
+    UpgradeEpoch,
+    CurrentWasmHash,
+    PreviousWasmHash,
+    SchemaVersion,
+    UpgradeProposalCounter,
 }
 
 /// Persistent storage keys — per-prompt and per-user data stored in
@@ -93,52 +105,8 @@ pub enum DataKey {
     PurchaseDispute(u64, Address),
     Escrow(u64, Address),
     Reviewers,
-    /// Head/tail/count for a discovery-index doubly linked list (#83).
-    IndexMeta(IndexScope),
-    /// One node of a discovery-index doubly linked list, keyed by prompt id (#83).
-    IndexNode(IndexScope, u64),
-}
-
-/// Discovery-index dimensions maintained as bounded, cursor-paginated linked
-/// lists (#83). These are rebuildable from canonical `Prompt` state — they
-/// never gate authorization, which always checks `Prompt`/`Purchase` fields
-/// directly.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum IndexScope {
-    Active,
-    Creator(Address),
-    Buyer(Address),
-    Category(String),
-    Tag(String),
-}
-
-/// One entry of a discovery-index doubly linked list. Insertion appends at
-/// the tail so pagination yields oldest-first, matching the previous
-/// Vec-based indexes' order.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IndexNode {
-    pub prev: Option<u64>,
-    pub next: Option<u64>,
-}
-
-/// List-level bookkeeping for a discovery index.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IndexMeta {
-    pub head: Option<u64>,
-    pub tail: Option<u64>,
-    pub count: u64,
-}
-
-/// A bounded page of prompts from a discovery index, plus the cursor to
-/// fetch the next page. `next_cursor` is `None` once the index is exhausted.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PromptPage {
-    pub prompts: Vec<Prompt>,
-    pub next_cursor: Option<u64>,
+    UpgradeSigners,
+    UpgradeProposal(u32),
 }
 
 #[contracttype]
@@ -219,6 +187,42 @@ pub struct Escrow {
     pub votes_for_reject: u32,
     pub is_appealed: bool,
     pub dispute_resolved_at: u64,
+}
+
+/// A timelocked, multi-party upgrade proposal (#84). Binds the exact code,
+/// network, contract, upgrade epoch, schema/migration identity, and the
+/// public execution window so a proposal can only ever be executed exactly
+/// as reviewed and approved.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposal {
+    pub id: u32,
+    pub proposer: Address,
+    pub target_wasm_hash: BytesN<32>,
+    /// The contract's `CurrentWasmHash` at proposal time. `None` before the
+    /// first governed upgrade ever executes. Re-checked at execution so a
+    /// proposal becomes invalid the moment a different upgrade lands first.
+    pub expected_current_wasm_hash: Option<BytesN<32>>,
+    pub contract_id: Address,
+    pub network_id: BytesN<32>,
+    /// The contract's `UpgradeEpoch` at proposal time; incremented on every
+    /// executed upgrade, giving a second, explicit replay/staleness guard.
+    pub epoch: u32,
+    pub schema_version: u32,
+    /// `sha256(target_wasm_hash || schema_version || network_id)`, checked
+    /// against the contract's own recomputation so it can't be substituted.
+    pub migration_hash: BytesN<32>,
+    /// `true` if this proposal restores `PreviousWasmHash` rather than
+    /// advancing to a new schema version.
+    pub is_rollback: bool,
+    /// Public timelock: earliest Unix timestamp at which execution is allowed.
+    pub earliest_execution_time: u64,
+    /// Unix timestamp after which the proposal can no longer be executed.
+    pub expiry_time: u64,
+    pub created_at: u64,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+    pub cancelled: bool,
 }
 
 #[contracttype]
@@ -558,7 +562,41 @@ pub trait PromptHashTrait {
     /// that exist — missing IDs are silently skipped.
     fn get_prompts_by_ids(env: Env, prompt_ids: Vec<u64>) -> Result<Vec<Prompt>, Error>;
 
-    fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error>;
+    // Timelocked multi-party upgrade governance (#84)
+    fn add_upgrade_signer(env: Env, signer: Address) -> Result<(), Error>;
+    fn remove_upgrade_signer(env: Env, signer: Address) -> Result<(), Error>;
+    fn set_upgrade_threshold(env: Env, threshold: u32) -> Result<(), Error>;
+    fn get_upgrade_signers(env: Env) -> Vec<Address>;
+    fn get_upgrade_threshold(env: Env) -> u32;
+    fn get_upgrade_epoch(env: Env) -> u32;
+    fn get_current_wasm_hash(env: Env) -> Option<BytesN<32>>;
+    fn get_previous_wasm_hash(env: Env) -> Option<BytesN<32>>;
+    fn get_schema_version(env: Env) -> u32;
+    fn compute_migration_hash(
+        env: Env,
+        target_wasm_hash: BytesN<32>,
+        schema_version: u32,
+    ) -> BytesN<32>;
+    /// Read-only structural invariant check ("simulate migration"). Callable
+    /// standalone (e.g. via RPC simulation before proposing) and re-run as
+    /// the final gate inside `execute_upgrade` before any mutation.
+    fn verify_upgrade_invariants(env: Env) -> Result<(), Error>;
+    #[allow(clippy::too_many_arguments)]
+    fn propose_upgrade(
+        env: Env,
+        proposer: Address,
+        target_wasm_hash: BytesN<32>,
+        schema_version: u32,
+        migration_hash: BytesN<32>,
+        earliest_execution_time: u64,
+        expiry_time: u64,
+        is_rollback: bool,
+    ) -> Result<u32, Error>;
+    fn approve_upgrade(env: Env, signer: Address, proposal_id: u32) -> Result<(), Error>;
+    fn cancel_upgrade(env: Env, caller: Address, proposal_id: u32) -> Result<(), Error>;
+    fn execute_upgrade(env: Env, caller: Address, proposal_id: u32) -> Result<(), Error>;
+    fn get_upgrade_proposal(env: Env, proposal_id: u32) -> Result<UpgradeProposal, Error>;
+
     fn extend_ttl(env: Env, key: DataKey) -> Result<(), Error>;
     /// Extend TTL for a bounded batch of prompts (and their listing
     /// revisions and discovery-index nodes), starting at `cursor` (or the

@@ -75,7 +75,22 @@ const promptSchema = new mongoose.Schema(
       default: 1,
       min: 1,
     },
-    // Anti-plagiarism fields (Issue #133)
+    // Anti-plagiarism fields (Issue #133, #157)
+    // Scan state (queued, retryable processing)
+    similarityScanStatus: {
+      type: String,
+      enum: ["pending", "processing", "completed", "failed"],
+      default: "pending",
+      index: true,
+    },
+    similarityScanJobId: {
+      // Reference to SimilarityJob document
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SimilarityJob",
+      default: null,
+    },
+    
+    // Results (updated when scan completes)
     similarityFlag: {
       type: String,
       enum: ["clean", "suspicious", "highly_similar"],
@@ -96,6 +111,20 @@ const promptSchema = new mongoose.Schema(
     similarityCheckedAt: {
       type: Date,
       default: null,
+    },
+    
+    // Privacy-preserving fingerprint (no plaintext)
+    // Allows efficient similarity scanning without loading full content
+    fingerprintVersion: {
+      type: String,
+      default: "1.0",
+    },
+    fingerprint: {
+      minHash: [Number], // MinHash signature
+      tokenHistogram: Buffer, // Quantized token frequencies
+      contentHash: String, // SHA256 for verification only
+      tokenCount: Number,
+      length: Number,
     },
     onChainId: {
       type: String,
@@ -144,8 +173,12 @@ const promptSchema = new mongoose.Schema(
   },
 );
 promptSchema.index({ title: 1 });
+promptSchema.index({ isActive: 1, listingStatus: 1, price: 1 });
+promptSchema.index({ category: 1, isActive: 1 });
+promptSchema.index({ title: 1, isActive: 1 });
 
 // Check if the model exists before creating it
 const Prompt = mongoose.models.Prompt || mongoose.model("Prompt", promptSchema);
 
 export default Prompt;
+

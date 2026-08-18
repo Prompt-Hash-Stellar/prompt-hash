@@ -91,20 +91,16 @@ async function deliverOnce(
   const body = JSON.stringify(payload);
   const signature = signPayload(secret, body);
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-PromptHash-Signature": signature,
-      "X-PromptHash-Delivery": payload.deliveryId,
-      "X-PromptHash-Event": payload.event,
-      "X-PromptHash-Timestamp": payload.timestamp,
-    },
-    body,
-    signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
-  });
+  const headers = {
+    "Content-Type": "application/json",
+    "X-PromptHash-Signature": signature,
+    "X-PromptHash-Delivery": payload.deliveryId,
+    "X-PromptHash-Event": payload.event,
+    "X-PromptHash-Timestamp": payload.timestamp,
+  };
 
-  return res.status;
+  const { status } = await safeDeliverWebhook(url, headers, body, DELIVERY_TIMEOUT_MS);
+  return status;
 }
 
 async function deliverWithRetry(

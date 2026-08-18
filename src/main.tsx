@@ -1,6 +1,72 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+
+// ── Global Fetch Interceptor for Request Correlation IDs ─────────────────────
+const originalFetch = window.fetch;
+window.fetch = async function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const urlString =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
+
+  // Only inject correlation headers on local API routes to avoid leaking to external systems
+  const isLocalApi =
+    urlString.startsWith("/") ||
+    urlString.startsWith(window.location.origin) ||
+    urlString.includes("/api/");
+
+  if (isLocalApi) {
+    const headers = new Headers(init?.headers || {});
+    const hasCorrelationHeader =
+      headers.has("x-correlation-id") || headers.has("x-request-id");
+
+    if (!hasCorrelationHeader) {
+      const requestId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : "f-" + Math.random().toString(36).substring(2, 15) + "-" + Date.now().toString(36);
+
+      headers.set("X-Request-ID", requestId);
+      headers.set("X-Correlation-ID", requestId);
+    }
+
+    init = {
+      ...init,
+      headers,
+    };
+  }
+
+  try {
+    const response = await originalFetch(input, init);
+    if (!response.ok) {
+      const clonedResponse = response.clone();
+      clonedResponse
+        .json()
+        .then((body) => {
+          if (body && typeof body === "object" && body.requestId) {
+            console.warn(
+              `[API Error] Request ID: ${body.requestId} - Status: ${response.status} for ${urlString}`,
+            );
+          }
+        })
+        .catch(() => {});
+    }
+    return response;
+  } catch (error) {
+    const headers = init?.headers ? new Headers(init.headers) : null;
+    const requestId = headers ? headers.get("X-Request-ID") : null;
+    console.error(
+      `[API Network Error] Request ID: ${requestId ?? "unknown"} - Error: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    throw error;
+  }
+};
+
 import { applyThemeBeforeRender } from "./hooks/useTheme";
 import App from "./App.tsx";
 import "@stellar/design-system/build/styles.min.css";

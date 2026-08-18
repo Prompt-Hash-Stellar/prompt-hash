@@ -183,6 +183,8 @@ describe("ALLOWED_EVENTS", () => {
 // dispatchEvent
 // ---------------------------------------------------------------------------
 
+import { setDnsLookup } from "../services/ssrfProtection";
+
 describe("dispatchEvent", () => {
   const originalFetch = global.fetch;
   let lastLogEntry: Record<string, unknown>;
@@ -190,6 +192,16 @@ describe("dispatchEvent", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    setDnsLookup(async (hostname: string) => {
+      if (
+        hostname.includes("127.0.0.1") ||
+        hostname.includes("localhost") ||
+        hostname.includes("private")
+      ) {
+        return [{ address: "127.0.0.1", family: 4 }];
+      }
+      return [{ address: "93.184.216.34", family: 4 }];
+    });
     lastLogEntry = {};
     mockFind.mockResolvedValue([]);
     mockFindOne.mockResolvedValue(null);
@@ -203,6 +215,7 @@ describe("dispatchEvent", () => {
   });
 
   afterEach(() => {
+    setDnsLookup(null);
     jest.useRealTimers();
   });
 

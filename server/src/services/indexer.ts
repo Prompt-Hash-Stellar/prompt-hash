@@ -4,7 +4,7 @@ import Prompt from "../models/Prompt";
 import User from "../models/User";
 import Purchase from "../models/Purchase";
 import { IndexerState } from "../models/IndexerState";
-import { scanForSimilarity } from "./similarityDetection";
+import { enqueueSimilarityScan, startSimilarityWorker } from "./similarityJobQueue";
 import { indexPromptProjection } from "./promptSearchIndex";
 import { stellarConfig } from "../config/stellar";
 
@@ -21,7 +21,11 @@ export async function startIndexer() {
     { upsert: true, new: true },
   );
 
-  // Poll every 5 seconds
+  // Start the similarity scan worker (processes queued jobs)
+  // Non-blocking, runs on 5-second intervals
+  startSimilarityWorker(5000);
+
+  // Poll for new blockchain events every 5 seconds
   setInterval(async () => {
     try {
       const latestLedger = await rpc.getLatestLedger();
@@ -93,11 +97,15 @@ async function processEvent(event: any) {
 
       await indexPromptProjection(upserted, creator, Number(event.ledger || 0));
 
-      // Run similarity scan asynchronously — never block the indexer loop.
+      // Enqueue similarity scan job (non-blocking, processed by worker)
+      // New prompts without fingerprints will have them generated on first scan
       if (upserted?.content) {
-        const combinedText = `${upserted.title ?? ""} ${upserted.content}`;
-        scanForSimilarity(prompt_id.toString(), combinedText).catch((err) =>
-          console.error("[similarity] Scan error for prompt", prompt_id.toString(), err),
+        enqueueSimilarityScan(prompt_id.toString()).catch((err) =>
+          console.error(
+            "[similarity-queue] Failed to enqueue scan for prompt",
+            prompt_id.toString(),
+            err,
+          ),
         );
       }
       break;

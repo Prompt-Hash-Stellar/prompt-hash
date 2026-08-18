@@ -10,9 +10,20 @@ async function handler(req: any, res: any) {
   await connectDb();
 
   if (req.method === "GET") {
-    const { walletAddress } = req.query ?? {};
-    if (!walletAddress) {
-      res.status(400).json({ error: "walletAddress query param is required." });
+    await connectDb();
+    // Admins may query any walletAddress via Authorization Bearer token
+    if (isAdminRequest(req)) {
+      const { walletAddress } = req.query ?? {};
+      if (!walletAddress) {
+        res.status(400).json({ error: "walletAddress query param is required." });
+        return;
+      }
+      const sub = await WebhookSubscription.findOne({ walletAddress: String(walletAddress).toLowerCase() }).select("-secret");
+      if (!sub) {
+        res.status(404).json({ error: "No webhook registered for this wallet." });
+        return;
+      }
+      res.status(200).json(sub);
       return;
     }
     const sub = await WebhookSubscription.findOne({
@@ -27,15 +38,28 @@ async function handler(req: any, res: any) {
   }
 
   if (req.method === "POST") {
-    const { walletAddress, url, events } = req.body ?? {};
-    if (!walletAddress || !url) {
-      res.status(400).json({ error: "walletAddress and url are required." });
+    await connectDb();
+    const { url, events } = req.body ?? {};
+    if (!url) {
+      res.status(400).json({ error: "url is required." });
       return;
     }
-    try {
-      new URL(url);
-    } catch {
-      res.status(400).json({ error: "url must be a valid URL." });
+    const ssrfCheck = await validateWebhookUrl(url);
+    if (!ssrfCheck.valid) {
+      res.status(400).json({ error: "Invalid or blocked webhook destination URL." });
+      return;
+    }
+
+    // Determine owner: admin may supply walletAddress, creators must authenticate
+    let owner: string | null = null;
+    if (isAdminRequest(req) && req.body?.walletAddress) {
+      owner = String(req.body.walletAddress).toLowerCase();
+    } else {
+      owner = validateSignedOwner(req, req.body?.walletAddress);
+    }
+
+    if (!owner) {
+      res.status(401).json({ error: "Unauthorized: signed ownership proof required." });
       return;
     }
 
@@ -59,12 +83,20 @@ async function handler(req: any, res: any) {
   }
 
   if (req.method === "DELETE") {
-    const { walletAddress } = req.body ?? {};
-    if (!walletAddress) {
-      res.status(400).json({ error: "walletAddress is required." });
+    await connectDb();
+    // Admin may delete any subscription when authorized
+    if (isAdminRequest(req) && req.body?.walletAddress) {
+      await WebhookSubscription.deleteOne({ walletAddress: String(req.body.walletAddress).toLowerCase() });
+      res.status(200).json({ message: "Webhook removed." });
       return;
     }
-    await WebhookSubscription.deleteOne({ walletAddress: String(walletAddress).toLowerCase() });
+
+    const owner = validateSignedOwner(req, req.body?.walletAddress);
+    if (!owner) {
+      res.status(401).json({ error: "Unauthorized: signed ownership proof required." });
+      return;
+    }
+    await WebhookSubscription.deleteOne({ walletAddress: owner });
     res.status(200).json({ message: "Webhook removed." });
     return;
   }
