@@ -41,7 +41,7 @@
     "@stellar/stellar-sdk": "^14.6.1",
     "@types/cors": "^2.8.19",
     "@typescript-eslint/parser": "^8.59.0",
-    "ai": "^6.0.168",
+    "ai": "^7.0.66",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
