@@ -25,7 +25,7 @@ import {
   savePromptListing,
   unsavePromptListing,
 } from "@/lib/prompts/library";
-import { stroopsToXlmString } from "@/lib/stellar/format";
+import { stroopsToXlmString, xlmToStroops } from "@/lib/stellar/format";
 import { PromptCard } from "./PromptCard";
 import { PromptModal } from "./PromptModal";
 import { NoResultsSuggestions } from "./NoResultsSuggestions";
@@ -42,7 +42,8 @@ const isMarketplaceConfigured = Boolean(
   browserStellarConfig.rpcUrl,
 );
 
-const parseXlmNumber = (value: bigint) => Number(stroopsToXlmString(value));
+// Convert numeric price range (XLM) to stroops bigint bounds to avoid IEEE-754 issues
+const priceRangeToStroops = (value: number) => xlmToStroops(value.toFixed(7));
 
 export interface FetchAllPromptsProps {
   selectedCategory: string;
@@ -201,8 +202,11 @@ const FetchAllPrompts = ({
   const filteredPrompts = useMemo(() => {
     const normalizedSearch = searchQuery.trim().toLowerCase();
     const normalizedCreator = (selectedCreator || "").trim().toLowerCase();
+    const minStroops = priceRangeToStroops(priceRange[0]);
+    const maxStroops = priceRangeToStroops(priceRange[1]);
+
     let prompts = (promptsQuery.data ?? []).filter((prompt) => {
-      const promptPrice = parseXlmNumber(prompt.priceStroops);
+      const promptPrice = prompt.priceStroops;
       const matchesCategory =
         !selectedCategory || prompt.category === selectedCategory;
       const matchesTag =
@@ -220,8 +224,7 @@ const FetchAllPrompts = ({
         prompt.tags?.some((tag) =>
           tag.toLowerCase().includes(normalizedSearch),
         );
-      const matchesPrice =
-        promptPrice >= priceRange[0] && promptPrice <= priceRange[1];
+      const matchesPrice = promptPrice >= minStroops && promptPrice <= maxStroops;
       const matchesCreator =
         !normalizedCreator ||
         prompt.creator.toLowerCase().includes(normalizedCreator);
