@@ -4,6 +4,7 @@ import Prompt from "../models/Prompt";
 import PromptVersion from "../models/PromptVersion";
 import Purchase from "../models/Purchase";
 import User from "../models/User";
+import { publishPromptVersion } from "../services/promptVersioning";
 
 export const PostPromptUpdate = async (req: Request, res: Response): Promise<Response> => {
   try {
@@ -20,17 +21,12 @@ export const PostPromptUpdate = async (req: Request, res: Response): Promise<Res
     const prompt = await Prompt.findOne({ _id: promptId, owner: user._id });
     if (!prompt) return res.status(403).json({ error: "Prompt not found or not owned by this wallet." });
 
-    const nextVersion = (prompt.currentVersionIndex ?? 1) + 1;
-
-    await PromptVersion.create({
+    const { versionIndex: nextVersion } = await publishPromptVersion({
       promptId: String(prompt._id),
-      versionIndex: nextVersion,
       content,
-      changeNote: changeNote ?? "",
-      createdBy: walletAddress.toLowerCase(),
+      changeNote,
+      createdBy: walletAddress,
     });
-
-    await Prompt.findByIdAndUpdate(prompt._id, { currentVersionIndex: nextVersion });
 
     return res.status(201).json({ message: "Version posted.", versionIndex: nextVersion });
   } catch (err) {
