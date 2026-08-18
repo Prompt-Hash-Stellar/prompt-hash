@@ -6,7 +6,8 @@ export type ApiHandler = (_req: any, _res: any) => Promise<void> | void;
 
 export function withObservability(handler: ApiHandler, name: string): ApiHandler {
   return async (req, res) => {
-    const requestId = uuidv4();
+    const incomingId = req.headers["x-correlation-id"] || req.headers["x-request-id"];
+    const requestId = (typeof incomingId === "string" && incomingId.trim()) ? incomingId : uuidv4();
     const startTime = Date.now();
 
     // Attach request context for logging
@@ -16,6 +17,20 @@ export function withObservability(handler: ApiHandler, name: string): ApiHandler
       url: req.url,
       clientIp: req.headers["x-forwarded-for"] || req.socket.remoteAddress,
     });
+
+    res.setHeader("X-Request-ID", requestId);
+    res.setHeader("X-Correlation-ID", requestId);
+
+    // Intercept res.json to inject requestId on error responses
+    const originalJson = res.json;
+    res.json = function (body: any) {
+      if (body && typeof body === "object" && !Array.isArray(body)) {
+        if (res.statusCode >= 400 || body.error || body.errors) {
+          body.requestId = requestId;
+        }
+      }
+      return originalJson.call(this, body);
+    };
 
     try {
       childLogger.info({ body: req.body }, `Request started: ${name}`);

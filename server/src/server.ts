@@ -21,6 +21,7 @@ import {
   strictLimiter,
   chatLimiter,
 } from "./middleware/rateLimiter";
+import { correlationIdMiddleware, requestLogger } from "./middleware/correlationId";
 // import { startIndexer } from "./services/indexerService"; // TODO: Update path when ready
 
 // ── Sentry backend monitoring (#332) ─────────────────────────────────────────
@@ -36,6 +37,9 @@ if (process.env.SENTRY_DSN) {
 const app = express();
 
 const port = 5000;
+
+app.use(correlationIdMiddleware);
+app.use(requestLogger);
 
 // Sentry error handler should be registered after routes (#332).
 app.use(express.json());
