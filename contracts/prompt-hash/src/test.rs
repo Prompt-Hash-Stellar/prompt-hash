@@ -3776,7 +3776,7 @@ fn test_escrow_timeout_releases_funds_to_creator() {
 
     // Warp ledger time past 7-day dispute window (7 * 24 * 3600 = 604,800 secs)
     env.ledger().with_mut(|l| {
-        l.timestamp = l.timestamp + 604_801;
+        l.timestamp += 604_801;
     });
 
     // Resolve timeout
@@ -3837,10 +3837,507 @@ fn test_dispute_appeal_mechanics() {
     assert!(!client.has_access(&buyer, &prompt_id));
 }
 
-// --- Cursor-paginated discovery indexes (#83) ---------------------------
+// ---------- Timelocked multi-party upgrade governance tests (#84) ----------
+
+const UPGRADE_MIN_DELAY: u64 = 2 * 24 * 60 * 60;
+
+/// Registers `count` upgrade signers and sets the approval threshold.
+fn setup_upgrade_signers(
+    env: &Env,
+    client: &PromptHashContractClient,
+    _admin: &Address,
+    count: usize,
+    threshold: u32,
+) -> Vec<Address> {
+    let mut signers = Vec::new(env);
+    for _ in 0..count {
+        let signer = Address::generate(env);
+        client.add_upgrade_signer(&signer);
+        signers.push_back(signer);
+    }
+    client.set_upgrade_threshold(&threshold);
+    signers
+}
+
+fn some_wasm_hash(env: &Env, byte: u8) -> BytesN<32> {
+    hash(env, byte)
+}
 
 #[test]
-fn test_pagination_at_scale_across_all_discovery_indexes() {
+fn test_add_remove_upgrade_signers_and_threshold() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
+    assert_eq!(client.get_upgrade_signers().len(), 3);
+    assert_eq!(client.get_upgrade_threshold(), 2);
+
+    let removed = signers.get(0).unwrap();
+    client.remove_upgrade_signer(&removed);
+    assert_eq!(client.get_upgrade_signers().len(), 2);
+
+    let result = client.try_remove_upgrade_signer(&removed);
+    match result {
+        Err(Ok(Error::UpgradeSignerConfigInvalid)) => {}
+        other => panic!("expected UpgradeSignerConfigInvalid, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_requires_registered_signer() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let outsider = Address::generate(&env);
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &outsider,
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::Unauthorized)) => {}
+        other => panic!("expected Unauthorized, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_enforces_minimum_public_timelock() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+
+    // earliest_execution_time only 1 hour out — far short of the minimum delay.
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + 3_600),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_rejects_forged_migration_hash() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let forged_hash = hash(&env, 250);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &forged_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_rejects_non_increasing_schema_version() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    // Genesis schema_version is 0; a forward migration proposing 0 must fail.
+    let migration_hash = client.compute_migration_hash(&target, &0u32);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &0u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_propose_upgrade_requires_configured_quorum() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    // One signer registered, but threshold set above the signer count.
+    let signer = Address::generate(&env);
+    client.add_upgrade_signer(&signer);
+    client.set_upgrade_threshold(&2u32);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_propose_upgrade(
+        &signer,
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
+    );
+    match result {
+        Err(Ok(Error::UpgradeSignerConfigInvalid)) => {}
+        other => panic!("expected UpgradeSignerConfigInvalid, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_single_signer_cannot_meet_quorum() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+
+    env.ledger().with_mut(|l| l.timestamp = earliest);
+    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_execute_upgrade_fails_before_timelock_elapses() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
+
+    // Quorum is met, but the public timelock has not yet elapsed.
+    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_execute_upgrade_fails_after_expiry() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
+
+    env.ledger().with_mut(|l| l.timestamp = expiry + 1);
+    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+
+    // An expired proposal can no longer collect further approvals either.
+    let approve_result = client.try_approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match approve_result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!(
+            "expected UpgradeProposalUnavailable on approve, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_cancel_upgrade_by_proposer_blocks_further_action() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposer = signers.get(0).unwrap();
+    let proposal_id = client.propose_upgrade(
+        &proposer,
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+
+    client.cancel_upgrade(&proposer, &proposal_id);
+
+    let approve_result = client.try_approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
+    match approve_result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+
+    env.ledger().with_mut(|l| l.timestamp = earliest);
+    let execute_result = client.try_execute_upgrade(&proposer, &proposal_id);
+    match execute_result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_cancel_upgrade_by_owner_overrides_proposer() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+
+    client.cancel_upgrade(&context.admin, &proposal_id);
+    let proposal = client.get_upgrade_proposal(&proposal_id);
+    assert!(proposal.cancelled);
+}
+
+#[test]
+fn test_cancel_upgrade_unauthorized_party_fails() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+
+    let outsider = Address::generate(&env);
+    let result = client.try_cancel_upgrade(&outsider, &proposal_id);
+    match result {
+        Err(Ok(Error::Unauthorized)) => {}
+        other => panic!("expected Unauthorized, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_approve_upgrade_rejects_duplicate_and_non_signer() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+
+    let dup_result = client.try_approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match dup_result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
+    }
+
+    let outsider = Address::generate(&env);
+    let non_signer_result = client.try_approve_upgrade(&outsider, &proposal_id);
+    match non_signer_result {
+        Err(Ok(Error::Unauthorized)) => {}
+        other => panic!("expected Unauthorized, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_signer_rotation_during_proposal_invalidates_stale_approval() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
+
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let earliest = now + UPGRADE_MIN_DELAY + 10;
+    let expiry = earliest + 1_000;
+
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &earliest,
+        &expiry,
+        &false,
+    );
+
+    // Two of three signers approve, reaching the threshold of 2.
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
+
+    // One of the approving signers is rotated out before execution.
+    client.remove_upgrade_signer(&signers.get(1).unwrap());
+
+    env.ledger().with_mut(|l| l.timestamp = earliest);
+    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    match result {
+        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        other => panic!(
+            "expected UpgradeProposalUnavailable after signer rotation, got {:?}",
+            other
+        ),
+    }
+
+    // The remaining active signer plus a newly-added one restores quorum.
+    let replacement = Address::generate(&env);
+    client.add_upgrade_signer(&replacement);
+    client.approve_upgrade(&replacement, &proposal_id);
+
+    let proposal = client.get_upgrade_proposal(&proposal_id);
+    // Three approvals recorded in total, but only 2 (signer 0 + replacement)
+    // belong to currently-active signers.
+    assert_eq!(proposal.approvals.len(), 3);
+}
+
+#[test]
+fn test_compute_migration_hash_is_deterministic_and_input_sensitive() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let target = some_wasm_hash(&env, 5);
+    let first = client.compute_migration_hash(&target, &1u32);
+    let second = client.compute_migration_hash(&target, &1u32);
+    assert_eq!(first, second);
+
+    let different_schema = client.compute_migration_hash(&target, &2u32);
+    assert_ne!(first, different_schema);
+
+    let different_target = some_wasm_hash(&env, 6);
+    let different_hash = client.compute_migration_hash(&different_target, &1u32);
+    assert_ne!(first, different_hash);
+}
+
+#[test]
+fn test_marketplace_functions_unaffected_by_pending_upgrade_governance() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
@@ -3848,527 +4345,109 @@ fn test_pagination_at_scale_across_all_discovery_indexes() {
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
-    fund_buyer(&xlm_client, &buyer, &context.contract, 5_000_000_000);
-
-    const TOTAL: u32 = 2_000;
-    let category_a = String::from_str(&env, "Software Development");
-    let category_b = String::from_str(&env, "Marketing");
-    let tag_rust = String::from_str(&env, "rust");
-
-    let mut ids: std::vec::Vec<u64> = std::vec::Vec::new();
-    for i in 0..TOTAL {
-        let category = if i % 2 == 0 {
-            category_a.clone()
-        } else {
-            category_b.clone()
-        };
-        let mut tags = Vec::new(&env);
-        if i % 3 == 0 {
-            tags.push_back(tag_rust.clone());
-        }
-        let id = client.create_prompt(
-            &creator,
-            &String::from_str(&env, "https://example.com/prompt.png"),
-            &String::from_str(&env, "Prompt"),
-            &category,
-            &String::from_str(&env, "preview"),
-            &String::from_str(&env, "ciphertext"),
-            &String::from_str(&env, "iv"),
-            &String::from_str(&env, "wrapped-key"),
-            &hash(&env, (i % 250) as u8),
-            &ListingConfig {
-                price: 1_000,
-                asset: context.xlm.clone(),
-                expires_at: 0,
-                splits: Vec::new(&env),
-                tags,
-                max_supply: 0,
-            },
-        );
-        ids.push(id);
-    }
-
-    // Buyer purchases every 10th prompt so the Buyer index has real scale too.
-    let mut bought_count = 0usize;
-    let mut i = 0u32;
-    while i < TOTAL {
-        let id = ids[i as usize];
-        client.buy_prompt(&buyer, &id, &None::<Address>, &1_000i128, &None::<Bytes>);
-        bought_count += 1;
-        i += 10;
-    }
-
-    fn walk_active(
-        client: &PromptHashContractClient,
-    ) -> std::collections::BTreeSet<u64> {
-        let mut seen = std::collections::BTreeSet::new();
-        let mut cursor: Option<u64> = None;
-        loop {
-            let page = client.get_active_prompts_page(&cursor, &50);
-            for p in page.prompts.iter() {
-                assert!(seen.insert(p.id), "duplicate id {} in pagination", p.id);
-            }
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        seen
-    }
-
-    let seen = walk_active(&client);
-    assert_eq!(seen.len(), TOTAL as usize);
-
-    let mut seen_creator = std::collections::BTreeSet::new();
-    let mut cursor: Option<u64> = None;
-    loop {
-        let page = client.get_prompts_by_creator_page(&creator, &cursor, &50);
-        for p in page.prompts.iter() {
-            assert!(seen_creator.insert(p.id));
-        }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    assert_eq!(seen_creator.len(), TOTAL as usize);
-
-    let mut seen_category = std::collections::BTreeSet::new();
-    let mut cursor: Option<u64> = None;
-    loop {
-        let page = client.get_prompts_by_category_page(&category_a, &cursor, &50);
-        for p in page.prompts.iter() {
-            seen_category.insert(p.id);
-        }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    assert_eq!(seen_category.len(), (TOTAL / 2) as usize);
-
-    let mut seen_tag = std::collections::BTreeSet::new();
-    let mut cursor: Option<u64> = None;
-    loop {
-        let page = client.get_prompts_by_tag_page(&tag_rust, &cursor, &50);
-        for p in page.prompts.iter() {
-            seen_tag.insert(p.id);
-        }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    let expected_tagged = (0..TOTAL).filter(|i| i % 3 == 0).count();
-    assert_eq!(seen_tag.len(), expected_tagged);
-
-    let mut seen_buyer = std::collections::BTreeSet::new();
-    let mut cursor: Option<u64> = None;
-    loop {
-        let page = client.get_prompts_by_buyer_page(&buyer, &cursor, &50);
-        for p in page.prompts.iter() {
-            seen_buyer.insert(p.id);
-        }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    assert_eq!(seen_buyer.len(), bought_count);
-}
-
-#[test]
-fn test_active_pagination_gap_closes_when_unvisited_item_delisted_between_pages() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let creator = Address::generate(&env);
-
-    let mut ids: std::vec::Vec<u64> = std::vec::Vec::new();
-    for _ in 0..10 {
-        ids.push(create_prompt(
-            &env,
-            &client,
-            &creator,
-            "Prompt",
-            1_000,
-            &context.xlm,
-        ));
-    }
-
-    let page1 = client.get_active_prompts_page(&None, &3);
-    let page1_ids: std::vec::Vec<u64> = page1.prompts.iter().map(|p| p.id).collect();
-    assert_eq!(page1_ids, std::vec::Vec::from([ids[0], ids[1], ids[2]]));
-    let cursor = page1.next_cursor;
-    assert_eq!(cursor, Some(ids[2]));
-
-    // Delist an item further down the list — not yet visited, not the cursor.
-    client.set_prompt_sale_status(&creator, &ids[5], &false);
-
-    // Resuming from the still-valid cursor must skip the delisted id without
-    // omitting or duplicating any other still-active id.
-    let page2 = client.get_active_prompts_page(&cursor, &3);
-    let page2_ids: std::vec::Vec<u64> = page2.prompts.iter().map(|p| p.id).collect();
-    assert_eq!(page2_ids, std::vec::Vec::from([ids[3], ids[4], ids[6]]));
-
-    let mut seen: std::vec::Vec<u64> = page1_ids;
-    seen.extend(page2_ids);
-    let mut cursor = page2.next_cursor;
-    loop {
-        let page = client.get_active_prompts_page(&cursor, &3);
-        seen.extend(page.prompts.iter().map(|p| p.id));
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    assert_eq!(seen.len(), 9);
-    assert!(!seen.contains(&ids[5]));
-}
-
-#[test]
-fn test_active_pagination_cursor_invalidated_when_anchor_removed() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let creator = Address::generate(&env);
-
-    let id0 = create_prompt(&env, &client, &creator, "First", 1_000, &context.xlm);
-    create_prompt(&env, &client, &creator, "Second", 1_000, &context.xlm);
-
-    let page1 = client.get_active_prompts_page(&None, &1);
-    assert_eq!(page1.next_cursor, Some(id0));
-
-    // Delist the exact item the cursor points at.
-    client.set_prompt_sale_status(&creator, &id0, &false);
-
-    let result = client.try_get_active_prompts_page(&page1.next_cursor, &1);
-    match result {
-        Err(Ok(Error::InvalidCursor)) => {}
-        other => panic!("expected InvalidCursor, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_cursor_tampering_with_fabricated_id_is_rejected() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let creator = Address::generate(&env);
-    create_prompt(&env, &client, &creator, "Only", 1_000, &context.xlm);
-
-    let result = client.try_get_active_prompts_page(&Some(999_999u64), &10);
-    match result {
-        Err(Ok(Error::InvalidCursor)) => {}
-        other => panic!("expected InvalidCursor for fabricated cursor, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_buyer_index_pagination_reflects_transfers_and_refunds() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
-
-    let creator = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let new_owner = Address::generate(&env);
-    let disputing_buyer = Address::generate(&env);
-
-    let transferable = create_prompt(
+    let price = 100_000_000i128;
+    let prompt_id = create_prompt(
         &env,
         &client,
         &creator,
-        "Transferable",
-        5_000,
+        "Governance Safety",
+        price,
         &context.xlm,
     );
-    let disputed = create_prompt(&env, &client, &creator, "Disputed", 6_000, &context.xlm);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
 
-    fund_buyer(&xlm_client, &seller, &context.contract, 100_000);
-    client.buy_prompt(
-        &seller,
-        &transferable,
-        &None::<Address>,
-        &5_000i128,
-        &None::<Bytes>,
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
+    let target = some_wasm_hash(&env, 9);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
+    let proposal_id = client.propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &false,
     );
+    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
 
-    fund_buyer(&xlm_client, &disputing_buyer, &context.contract, 100_000);
-    client.buy_prompt(
-        &disputing_buyer,
-        &disputed,
-        &None::<Address>,
-        &6_000i128,
-        &None::<Bytes>,
-    );
+    // Marketplace purchase/access flows work identically while a governance
+    // proposal is pending — the two subsystems share no mutable state.
+    client.buy_prompt(&buyer, &prompt_id, &None, &price, &None);
+    assert!(client.has_access(&buyer, &prompt_id));
 
-    fund_buyer(&xlm_client, &new_owner, &context.contract, 100_000);
-    client.transfer_license(&seller, &transferable, &new_owner, &10_000i128);
-
-    client.open_dispute(
-        &disputing_buyer,
-        &disputed,
-        &crate::types::DisputeReason::MissingMetadata,
-    );
-    client.resolve_dispute(&context.admin, &disputed, &disputing_buyer, &true);
-
-    assert_eq!(
-        client
-            .get_prompts_by_buyer_page(&seller, &None, &50)
-            .prompts
-            .len(),
-        0
-    );
-    let new_owner_page = client.get_prompts_by_buyer_page(&new_owner, &None, &50);
-    assert_eq!(new_owner_page.prompts.len(), 1);
-    assert_eq!(new_owner_page.prompts.get(0).unwrap().id, transferable);
-    assert_eq!(
-        client
-            .get_prompts_by_buyer_page(&disputing_buyer, &None, &50)
-            .prompts
-            .len(),
-        0
-    );
+    client.cancel_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    assert!(client.has_access(&buyer, &prompt_id));
+    let prompt = client.get_prompt(&prompt_id);
+    assert_eq!(prompt.sales_count, 1);
 }
 
 #[test]
-fn test_revise_listing_moves_prompt_between_category_index_buckets() {
+fn test_propose_rollback_fails_without_any_prior_upgrade() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
-    let creator = Address::generate(&env);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
 
-    let prompt_id = create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
-    let old_category = String::from_str(&env, "Software Development");
-    let new_category = String::from_str(&env, "Marketing");
+    // No upgrade has ever executed, so PreviousWasmHash is unset — a
+    // rollback proposal can never be bound to a real prior version yet.
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &0u32);
+    let now = env.ledger().timestamp();
 
-    assert_eq!(
-        client
-            .get_prompts_by_category_page(&old_category, &None, &50)
-            .prompts
-            .len(),
-        1
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &0u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &true,
     );
-
-    client.revise_listing(
-        &creator,
-        &prompt_id,
-        &String::from_str(&env, "Prompt"),
-        &new_category,
-        &String::from_str(&env, "preview"),
-        &String::from_str(&env, "https://example.com/prompt.png"),
-        &1_000i128,
-    );
-
-    // No stale entry left under the old category, no duplicate under the new one.
-    assert_eq!(
-        client
-            .get_prompts_by_category_page(&old_category, &None, &50)
-            .prompts
-            .len(),
-        0
-    );
-    let new_page = client.get_prompts_by_category_page(&new_category, &None, &50);
-    assert_eq!(new_page.prompts.len(), 1);
-    assert_eq!(new_page.prompts.get(0).unwrap().id, prompt_id);
-}
-
-#[test]
-fn test_get_prompts_by_ids_rejects_batches_over_max_page_size() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-
-    let ids = Vec::from_array(&env, [0u64; 51]);
-    let result = client.try_get_prompts_by_ids(&ids);
     match result {
-        Err(Ok(Error::TooManyIds)) => {}
-        other => panic!("expected TooManyIds, got {:?}", other),
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
     }
 }
 
 #[test]
-fn test_migrate_prompt_indexes_page_is_resumable_and_idempotent() {
+fn test_propose_rollback_rejects_schema_version_increase() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
-    let creator = Address::generate(&env);
+    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
 
-    for _ in 0..12 {
-        create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
-    }
+    // A rollback must restore a schema version at or below the current one
+    // (0 at genesis); proposing schema_version 1 as a rollback must fail
+    // the schema-transition gate before the (unrelated) missing-prior-hash
+    // check is ever reached.
+    let target = some_wasm_hash(&env, 1);
+    let migration_hash = client.compute_migration_hash(&target, &1u32);
+    let now = env.ledger().timestamp();
 
-    // Every prompt is already indexed at creation time; migrating over an
-    // already-indexed range must be a resumable no-op that never duplicates.
-    let mut cursor: Option<u64> = None;
-    let mut pages = 0;
-    loop {
-        cursor = client.migrate_prompt_indexes_page(&cursor, &5);
-        pages += 1;
-        if cursor.is_none() {
-            break;
-        }
-        assert!(pages <= 10, "migration did not converge");
-    }
-    assert_eq!(pages, 3); // 12 prompts / 5 per page -> 3 pages (5, 5, 2)
-
-    assert_eq!(client.get_active_prompts_page(&None, &50).prompts.len(), 12);
-    assert_eq!(
-        client
-            .get_prompts_by_creator_page(&creator, &None, &50)
-            .prompts
-            .len(),
-        12
+    let result = client.try_propose_upgrade(
+        &signers.get(0).unwrap(),
+        &target,
+        &1u32,
+        &migration_hash,
+        &(now + UPGRADE_MIN_DELAY + 10),
+        &(now + UPGRADE_MIN_DELAY + 1_000),
+        &true,
     );
-
-    // Re-running the whole migration from scratch must not create duplicates.
-    let mut cursor: Option<u64> = None;
-    loop {
-        cursor = client.migrate_prompt_indexes_page(&cursor, &5);
-        if cursor.is_none() {
-            break;
-        }
+    match result {
+        Err(Ok(Error::UpgradeBindingMismatch)) => {}
+        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
     }
-    assert_eq!(client.get_active_prompts_page(&None, &50).prompts.len(), 12);
 }
 
 #[test]
-fn test_migrate_buyer_index_page_is_resumable_and_idempotent() {
+fn test_verify_upgrade_invariants_passes_for_healthy_configuration() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
-    let creator = Address::generate(&env);
-    let buyer = Address::generate(&env);
+    setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
 
-    // Simulate pre-migration on-chain state: five prompts already recorded
-    // in the legacy Vec-based buyer index. The write path that produced this
-    // shape no longer exists in the current contract version, so it is
-    // seeded directly here to exercise the migration path.
-    let mut legacy_ids: Vec<u64> = Vec::new(&env);
-    for i in 0..5 {
-        let id = create_prompt(
-            &env,
-            &client,
-            &creator,
-            "Legacy",
-            1_000 + i as i128,
-            &context.xlm,
-        );
-        legacy_ids.push_back(id);
-    }
-    env.as_contract(&context.contract, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey::BuyerPrompts(buyer.clone()), &legacy_ids);
-    });
-
-    // Buyer index starts empty — nothing has migrated yet.
-    assert_eq!(
-        client
-            .get_prompts_by_buyer_page(&buyer, &None, &50)
-            .prompts
-            .len(),
-        0
-    );
-
-    // Interrupted: only the first 2 of 5 entries processed.
-    let cursor = client.migrate_buyer_index_page(&buyer, &None, &2);
-    assert_eq!(cursor, Some(2));
-    assert_eq!(
-        client
-            .get_prompts_by_buyer_page(&buyer, &None, &50)
-            .prompts
-            .len(),
-        2
-    );
-
-    // Retry overlapping the already-migrated range — must not duplicate.
-    let cursor = client.migrate_buyer_index_page(&buyer, &Some(0), &3);
-    assert_eq!(cursor, Some(3));
-    assert_eq!(
-        client
-            .get_prompts_by_buyer_page(&buyer, &None, &50)
-            .prompts
-            .len(),
-        3
-    );
-
-    // Finish the migration.
-    let cursor = client.migrate_buyer_index_page(&buyer, &cursor, &10);
-    assert_eq!(cursor, None);
-    assert_eq!(
-        client
-            .get_prompts_by_buyer_page(&buyer, &None, &50)
-            .prompts
-            .len(),
-        5
-    );
-
-    // Calling again after completion is a safe no-op (legacy key already drained).
-    let cursor = client.migrate_buyer_index_page(&buyer, &None, &10);
-    assert_eq!(cursor, None);
-    assert_eq!(
-        client
-            .get_prompts_by_buyer_page(&buyer, &None, &50)
-            .prompts
-            .len(),
-        5
-    );
-}
-
-#[test]
-fn test_active_prompts_page_cost_is_bounded_independent_of_market_size() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let creator = Address::generate(&env);
-
-    for _ in 0..50 {
-        create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
-    }
-    client.get_active_prompts_page(&None, &50);
-    let small_cost = env.cost_estimate().resources().instructions;
-
-    for _ in 0..950 {
-        create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
-    }
-    client.get_active_prompts_page(&None, &50);
-    let large_cost = env.cost_estimate().resources().instructions;
-
-    // A single page's cost must stay roughly flat as the market grows 20x —
-    // it must never scale with total market size (#83). This assertion is
-    // the resource-snapshot regression guard that `cargo test` (already run
-    // in CI via .github/workflows/contracts.yml) enforces on every PR.
-    assert!(
-        large_cost <= small_cost * 3,
-        "page cost grew with market size: {} -> {} instructions",
-        small_cost,
-        large_cost
-    );
-}
-
-#[test]
-fn test_extend_ttl_page_is_bounded_and_resumable() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let creator = Address::generate(&env);
-
-    for _ in 0..12 {
-        create_prompt(&env, &client, &creator, "Prompt", 1_000, &context.xlm);
-    }
-
-    let mut cursor: Option<u64> = None;
-    let mut pages = 0;
-    loop {
-        cursor = client.extend_ttl_page(&cursor, &5);
-        pages += 1;
-        if cursor.is_none() {
-            break;
-        }
-        assert!(pages <= 10, "TTL extension did not converge");
-    }
-    assert_eq!(pages, 3);
+    // Callable standalone (e.g. via RPC simulation before proposing) and
+    // must not error once signers/threshold are configured validly.
+    client.verify_upgrade_invariants();
 }

@@ -1,6 +1,6 @@
 use super::types::{
-    DataKey, Error, IndexMeta, IndexNode, IndexScope, InstanceDataKey, ListingRevisionRecord,
-    Prompt, PromptPage, Purchase, PurchaseDispute, Escrow,
+    DataKey, Error, Escrow, InstanceDataKey, ListingRevisionRecord, Prompt, Purchase,
+    PurchaseDispute, UpgradeProposal,
 };
 use soroban_sdk::{token, Address, BytesN, Env, String, Vec};
 
@@ -119,32 +119,75 @@ impl InstanceStorage {
         env.storage().instance().get(&key).unwrap_or(1)
     }
 
-    pub fn get_current_fee_policy_version(env: &Env) -> u32 {
-        let key = InstanceDataKey::FeePolicyVersion;
+    pub fn get_upgrade_threshold(env: &Env) -> u32 {
+        let key = InstanceDataKey::UpgradeThreshold;
         env.storage().instance().get(&key).unwrap_or(0)
     }
 
-    pub fn set_current_fee_policy_version(env: &Env, version: u32) {
-        let key = InstanceDataKey::FeePolicyVersion;
-        env.storage().instance().set(&key, &version);
+    pub fn set_upgrade_threshold(env: &Env, threshold: u32) {
+        let key = InstanceDataKey::UpgradeThreshold;
+        env.storage().instance().set(&key, &threshold);
     }
 
-    pub fn get_pending_fee_policy(env: &Env) -> Option<FeePolicy> {
-        env.storage()
-            .instance()
-            .get(&InstanceDataKey::PendingFeePolicy)
+    pub fn get_upgrade_epoch(env: &Env) -> u32 {
+        let key = InstanceDataKey::UpgradeEpoch;
+        env.storage().instance().get(&key).unwrap_or(0)
     }
 
-    pub fn set_pending_fee_policy(env: &Env, policy: &FeePolicy) {
+    pub fn increment_upgrade_epoch(env: &Env) -> Result<u32, Error> {
+        let next = Self::get_upgrade_epoch(env)
+            .checked_add(1)
+            .ok_or(Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
-            .set(&InstanceDataKey::PendingFeePolicy, policy);
+            .set(&InstanceDataKey::UpgradeEpoch, &next);
+        Ok(next)
     }
 
-    pub fn clear_pending_fee_policy(env: &Env) {
+    pub fn get_current_wasm_hash(env: &Env) -> Option<BytesN<32>> {
         env.storage()
             .instance()
-            .remove(&InstanceDataKey::PendingFeePolicy);
+            .get(&InstanceDataKey::CurrentWasmHash)
+    }
+
+    pub fn set_current_wasm_hash(env: &Env, hash: &BytesN<32>) {
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::CurrentWasmHash, hash);
+    }
+
+    pub fn get_previous_wasm_hash(env: &Env) -> Option<BytesN<32>> {
+        env.storage()
+            .instance()
+            .get(&InstanceDataKey::PreviousWasmHash)
+    }
+
+    pub fn set_previous_wasm_hash(env: &Env, hash: &BytesN<32>) {
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::PreviousWasmHash, hash);
+    }
+
+    pub fn get_schema_version(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&InstanceDataKey::SchemaVersion)
+            .unwrap_or(0)
+    }
+
+    pub fn set_schema_version(env: &Env, version: u32) {
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::SchemaVersion, &version);
+    }
+
+    /// Returns the next free upgrade-proposal id and persists the counter.
+    pub fn next_upgrade_proposal_id(env: &Env) -> Result<u32, Error> {
+        let key = InstanceDataKey::UpgradeProposalCounter;
+        let id: u32 = env.storage().instance().get(&key).unwrap_or(0);
+        let next = id.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+        env.storage().instance().set(&key, &next);
+        Ok(id)
     }
 }
 
@@ -712,6 +755,40 @@ impl Storage {
         let key = DataKey::Reviewers;
         env.storage().persistent().set(&key, reviewers);
         Self::extend_key_ttl(env, &key);
+    }
+
+    pub fn get_upgrade_signers(env: &Env) -> Vec<Address> {
+        let key = DataKey::UpgradeSigners;
+        let signers = env.storage().persistent().get(&key);
+        if env.storage().persistent().has(&key) {
+            Self::extend_key_ttl(env, &key);
+        }
+        signers.unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn save_upgrade_signers(env: &Env, signers: &Vec<Address>) {
+        let key = DataKey::UpgradeSigners;
+        env.storage().persistent().set(&key, signers);
+        Self::extend_key_ttl(env, &key);
+    }
+
+    pub fn save_upgrade_proposal(env: &Env, proposal: &UpgradeProposal) {
+        let key = DataKey::UpgradeProposal(proposal.id);
+        env.storage().persistent().set(&key, proposal);
+        Self::extend_key_ttl(env, &key);
+    }
+
+    pub fn get_upgrade_proposal(env: &Env, proposal_id: u32) -> Option<UpgradeProposal> {
+        let key = DataKey::UpgradeProposal(proposal_id);
+        let proposal = env.storage().persistent().get(&key);
+        if env.storage().persistent().has(&key) {
+            Self::extend_key_ttl(env, &key);
+        }
+        proposal
+    }
+
+    pub fn require_upgrade_proposal(env: &Env, proposal_id: u32) -> Result<UpgradeProposal, Error> {
+        Self::get_upgrade_proposal(env, proposal_id).ok_or(Error::UpgradeProposalUnavailable)
     }
 
     pub fn add_voucher(env: &Env, prompt_id: u64, hashed_code: &BytesN<32>, discount_bps: u32) {
