@@ -4058,19 +4058,19 @@
   resolved "https://registry.yarnpkg.com/@ungap/structured-clone/-/structured-clone-1.3.3.tgz#094041e1a4cb1987f038335421281ac8be390bcc"
   integrity sha512-60YRaenCQcVjYEKOcG824+DRGGIQ3VKErcBoAEDJZz5bKIs2ZG+X/H9Nk+Q6EVkwJk5QNApxbrc5QtBSwtrXAg==
 
-"@vercel/build-utils@13.35.0":
-  version "13.35.0"
-  resolved "https://registry.yarnpkg.com/@vercel/build-utils/-/build-utils-13.35.0.tgz#5db0ee942c5282ad783edf79b898a51ea85021c8"
-  integrity sha512-UQmy2Ht1S3Evz7V9IfA1MyK452gjfPwZRnjGVRV/iVrB9MSCg4tMKmXTVYIarRMuUPbBmnJpoJ1mXPI/pHkJvg==
+"@vercel/build-utils@14.1.1":
+  version "14.1.1"
+  resolved "https://registry.yarnpkg.com/@vercel/build-utils/-/build-utils-14.1.1.tgz#65ad5e8c625c370130a98478dcd4df3b6ad1a190"
+  integrity sha512-kW9CeW0aokEBvX1rSgNyOKg90VyIQOmT0wBl7KXneM3Qs1+x4Puakqp97BdIgttWEtmN96UvdhQVG2bCA5JsPA==
   dependencies:
-    "@vercel/python-analysis" "0.11.1"
+    "@vercel/python-analysis" "0.13.2"
     cjs-module-lexer "1.2.3"
     es-module-lexer "1.5.0"
 
-"@vercel/error-utils@2.2.0":
-  version "2.2.0"
-  resolved "https://registry.yarnpkg.com/@vercel/error-utils/-/error-utils-2.2.0.tgz#3aaf43cf463c37fc097e016265098c4e85a66fc6"
-  integrity sha512-WFWiRxfPzoYWYifaj4thSKvAaZZwUOqD4k5GINRIgZgCiS2E3iAJbWbIsIZmkQdTecWFHcWGA6q48CjisgpOBA==
+"@vercel/error-utils@2.2.1":
+  version "2.2.1"
+  resolved "https://registry.yarnpkg.com/@vercel/error-utils/-/error-utils-2.2.1.tgz#41925c91f931465abdb4028d9e3fad0c7a8f5ef5"
+  integrity sha512-9DhP8jP7raLML4hGsBemxX5fXuQnu5xxMV+HjGygGbzEmVK/+KyJ3QP2Cw7PdF0uXdb9N0Qa4c3tRGH34ZX6vw==
 
 "@vercel/nft@1.10.0":
   version "1.10.0"
@@ -4090,19 +4090,19 @@
     picomatch "^4.0.2"
     resolve-from "^5.0.0"
 
-"@vercel/node@^5.8.22":
-  version "5.8.27"
-  resolved "https://registry.yarnpkg.com/@vercel/node/-/node-5.8.27.tgz#fb4415757f79b52b3f4349cebfc36f3c9b57c14e"
-  integrity sha512-Nsly5g2N70nkBKzXgTLUtjI2wwF0wHSzt6kzFMW2my1ZuYNEexWtIbvS0cV5ykBLSo5XUhhen6EWYM81oRvxdw==
+"@vercel/node@^5.10.1":
+  version "5.10.1"
+  resolved "https://registry.yarnpkg.com/@vercel/node/-/node-5.10.1.tgz#cdba24354c3241ce26b69c0e10fe0c715796b1ff"
+  integrity sha512-muj+t8sZ2XHQDkWcHxkql2rbvr/HhZOqYdZBG7pw8F5RLasL3o0gjHLXJKwHAEHp2I3fd3AgbMud2oz+hzeV0g==
   dependencies:
     "@edge-runtime/node-utils" "2.3.0"
     "@edge-runtime/primitives" "4.1.0"
     "@edge-runtime/vm" "3.2.0"
     "@types/node" "20.11.0"
-    "@vercel/build-utils" "13.35.0"
-    "@vercel/error-utils" "2.2.0"
+    "@vercel/build-utils" "14.1.1"
+    "@vercel/error-utils" "2.2.1"
     "@vercel/nft" "1.10.0"
-    "@vercel/static-config" "3.4.0"
+    "@vercel/static-config" "3.4.1"
     async-listen "3.0.0"
     cjs-module-lexer "1.2.3"
     edge-runtime "2.5.9"
@@ -4118,10 +4118,10 @@
     typescript "npm:typescript@5.9.3"
     undici "5.28.4"
 
-"@vercel/python-analysis@0.11.1":
-  version "0.11.1"
-  resolved "https://registry.yarnpkg.com/@vercel/python-analysis/-/python-analysis-0.11.1.tgz#5b876c0c1c7af91b914a2d3f05b7008fae759e40"
-  integrity sha512-EPPLuXJQhIDUx08H9nG76AR2HSgBquwe3OAX5s2w20M923iaWeGGVkhX/4yZ89CJfXEZgE1Aj/mX7lVHOVIcYA==
+"@vercel/python-analysis@0.13.2":
+  version "0.13.2"
+  resolved "https://registry.yarnpkg.com/@vercel/python-analysis/-/python-analysis-0.13.2.tgz#c2d202e83d5766451557658ba54e7fdbeb188193"
+  integrity sha512-IEr5K2gvX143NBoQc1W4BWrdDWjZwxnIT6UrL5Y1dnyH7Cqc4AV00FIAddB1YpnIZBJwT4ZhE8QbgqBeO6C9Zw==
   dependencies:
     "@bytecodealliance/preview2-shim" "0.17.6"
     "@renovatebot/pep440" "4.2.1"
@@ -4131,10 +4131,10 @@
     smol-toml "1.5.2"
     zod "3.22.4"
 
-"@vercel/static-config@3.4.0":
-  version "3.4.0"
-  resolved "https://registry.yarnpkg.com/@vercel/static-config/-/static-config-3.4.0.tgz#7bd411b6256e411bd3d20b613d4de4cc4c6959c5"
-  integrity sha512-wCq90CMUB//ggnFh77NQO1xaLFsS4LigQIqKrH6ohnr9Br/KI1FhlErx62WfCOuueWaW+LVsbLOqNXIUjK8t6A==
+"@vercel/static-config@3.4.1":
+  version "3.4.1"
+  resolved "https://registry.yarnpkg.com/@vercel/static-config/-/static-config-3.4.1.tgz#82ede3ed16e9e18c8159e6cc03eb347fb57d7c77"
+  integrity sha512-kJKTyOg25JDRgDkHEkc+vWlvURxmSQkVKyRPO4EEGD/8HpJT+4u9Z/VGxwnCZ6zZBxYPpma283qBsHwY0gXjfw==
   dependencies:
     ajv "8.6.3"
     json-schema-to-ts "1.6.4"
