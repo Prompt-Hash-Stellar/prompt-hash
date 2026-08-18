@@ -30,6 +30,8 @@ function validateSignedOwner(req: any, address?: string) {
   return null;
 }
 
+import { validateWebhookUrl } from "../../server/src/services/ssrfProtection";
+
 async function handler(req: any, res: any) {
   await connectDb();
 
@@ -73,10 +75,9 @@ async function handler(req: any, res: any) {
       res.status(400).json({ error: "url is required." });
       return;
     }
-    try {
-      new URL(url);
-    } catch {
-      res.status(400).json({ error: "url must be a valid URL." });
+    const ssrfCheck = await validateWebhookUrl(url);
+    if (!ssrfCheck.valid) {
+      res.status(400).json({ error: "Invalid or blocked webhook destination URL." });
       return;
     }
 
