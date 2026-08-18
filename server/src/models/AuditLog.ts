@@ -92,8 +92,6 @@ const auditLogSchema = new mongoose.Schema(
 );
 
 // Hash chaining middleware for tamper-evident audit logs
-// Mongoose 9 pre('save') middleware no longer receives a `next` callback;
-// errors propagate by rejecting the returned promise.
 auditLogSchema.pre("save", async function () {
   const latestDoc = await (this.constructor as any)
     .findOne()
