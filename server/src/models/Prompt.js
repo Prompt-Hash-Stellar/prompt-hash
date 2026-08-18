@@ -173,8 +173,12 @@ const promptSchema = new mongoose.Schema(
   },
 );
 promptSchema.index({ title: 1 });
+promptSchema.index({ isActive: 1, listingStatus: 1, price: 1 });
+promptSchema.index({ category: 1, isActive: 1 });
+promptSchema.index({ title: 1, isActive: 1 });
 
 // Check if the model exists before creating it
 const Prompt = mongoose.models.Prompt || mongoose.model("Prompt", promptSchema);
 
 export default Prompt;
+
