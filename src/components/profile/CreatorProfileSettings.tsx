@@ -3,7 +3,9 @@ import { AlertCircle, CheckCircle2, Loader2, Save, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { uploadImageToIpfs, isIpfsUploadConfigured } from "@/lib/ipfs/upload";
+import { uploadImageToIpfs } from "@/lib/ipfs/upload";
+import { useContext } from "react";
+import { WalletContext } from "@/providers/WalletProvider";
 import { saveProfileAvatarUrl } from "@/lib/profile/profileStorage";
 
 export interface CreatorProfileData {
@@ -81,6 +83,7 @@ export function CreatorProfileSettings({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const wallet = useContext(WalletContext);
 
   const handleChange = (
     e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
@@ -241,16 +244,24 @@ export function CreatorProfileSettings({
               type="file"
               accept="image/*"
               className="flex-1"
-              onChange={async (e) => {
+                onChange={async (e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
                 try {
-                  if (!isIpfsUploadConfigured()) {
-                    setSaveError("IPFS is not configured. Please set PUBLIC_PINATA_JWT.");
+                  if (!wallet || !wallet.address) {
+                    setSaveError("Please connect your wallet to upload an avatar.");
                     return;
                   }
                   setSaving(true);
-                  const result = await uploadImageToIpfs(file);
+                  const timestamp = Date.now();
+                  const message = `prompt-hash upload:${wallet.address}:${timestamp}`;
+                  const signed = await wallet.signMessage(message);
+                  const signedMessage = typeof signed === "string" ? signed : signed?.signedMessage;
+                  if (!signedMessage) {
+                    setSaveError("Failed to obtain upload signature from wallet.");
+                    return;
+                  }
+                  const result = await uploadImageToIpfs(file, { address: wallet.address, signedMessage, timestamp });
                   const gatewayUrl = `https://gateway.pinata.cloud/ipfs/${result.cid}`;
                   setForm((prev) => ({ ...prev, avatarUrl: gatewayUrl }));
                   setErrors((prev) => {

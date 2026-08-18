@@ -1,4 +1,13 @@
 import Prompt from "../models/Prompt";
+import {
+  escapeRegex,
+  SearchBudgetError,
+  MAX_QUERY_LENGTH,
+  MAX_SEARCH_LIMIT,
+  MAX_SUGGESTION_LIMIT,
+  MAX_SEARCH_TIME_MS,
+  MAX_SUGGESTION_TIME_MS,
+} from "../utils/searchUtils";
 
 interface SearchFilters {
   query?: string;
@@ -28,9 +37,19 @@ export async function searchPrompts(filters: SearchFilters): Promise<SearchRespo
     minPrice = 0,
     maxPrice = 1000000,
     sortBy = "recent",
-    page = 1,
-    limit = 20,
   } = filters;
+
+  const trimmedQuery = (query || "").trim();
+  if (trimmedQuery.length > MAX_QUERY_LENGTH) {
+    throw new SearchBudgetError(
+      `Query length exceeds maximum limit of ${MAX_QUERY_LENGTH} characters`,
+      "QUERY_LENGTH_EXCEEDED",
+      400
+    );
+  }
+
+  const limit = Math.max(1, Math.min(Number(filters.limit) || 20, MAX_SEARCH_LIMIT));
+  const page = Math.max(1, Math.min(Number(filters.page) || 1, 1000));
 
   // Build the base query
   const baseQuery: any = {
@@ -47,8 +66,9 @@ export async function searchPrompts(filters: SearchFilters): Promise<SearchRespo
   // Add text search if query is provided
   let searchQuery = Prompt.find(baseQuery);
 
-  if (query && query.trim() !== "") {
-    const searchRegex = new RegExp(query.trim(), "i");
+  if (trimmedQuery !== "") {
+    const escapedPattern = escapeRegex(trimmedQuery);
+    const searchRegex = new RegExp(escapedPattern, "i");
     searchQuery = searchQuery.or([
       { title: searchRegex },
       { content: searchRegex },
@@ -56,74 +76,107 @@ export async function searchPrompts(filters: SearchFilters): Promise<SearchRespo
     ]);
   }
 
-  // Get total count for pagination
-  const total = await Prompt.countDocuments(searchQuery.getFilter());
-
-  // Apply sorting
+  // Apply sorting with deterministic tie-breaker
   let sortOptions: any;
   switch (sortBy) {
     case "price-low":
-      sortOptions = { price: 1 };
+      sortOptions = { price: 1, _id: -1 };
       break;
     case "price-high":
-      sortOptions = { price: -1 };
+      sortOptions = { price: -1, _id: -1 };
       break;
     case "sales":
-      sortOptions = { salesCount: -1 };
+      sortOptions = { salesCount: -1, _id: -1 };
       break;
     case "rating":
-      sortOptions = { rating: -1 };
+      sortOptions = { rating: -1, _id: -1 };
       break;
     case "recent":
     default:
-      sortOptions = { createdAt: -1 };
+      sortOptions = { createdAt: -1, _id: -1 };
       break;
   }
 
-  // Execute query with pagination
-  const prompts = await searchQuery
-    .sort(sortOptions)
-    .skip((page - 1) * limit)
-    .limit(limit)
-    .populate("owner", "walletAddress username rating")
-    .lean();
+  try {
+    const total = await Prompt.countDocuments(searchQuery.getFilter()).maxTimeMS(MAX_SEARCH_TIME_MS);
 
-  const totalPages = Math.ceil(total / limit);
-  const hasMore = page < totalPages;
+    const prompts = await searchQuery
+      .sort(sortOptions)
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate("owner", "walletAddress username rating")
+      .maxTimeMS(MAX_SEARCH_TIME_MS)
+      .lean();
 
-  return {
-    prompts,
-    total,
-    page,
-    totalPages,
-    hasMore,
-  };
+    const totalPages = Math.ceil(total / limit);
+    const hasMore = page < totalPages;
+
+    return {
+      prompts,
+      total,
+      page,
+      totalPages,
+      hasMore,
+    };
+  } catch (error: any) {
+    if (error instanceof SearchBudgetError) throw error;
+    if (
+      error.name === "MongoServerError" &&
+      (error.code === 50 || error.message?.includes("time limit") || error.message?.includes("exceeded"))
+    ) {
+      throw new SearchBudgetError("Search query execution time budget exceeded", "QUERY_TIMEOUT_EXCEEDED", 408);
+    }
+    throw error;
+  }
 }
 
 /**
  * Get search suggestions based on query
  */
 export async function getSearchSuggestions(query: string, limit: number = 5) {
-  if (!query || query.trim().length < 2) {
+  const trimmedQuery = (query || "").trim();
+  if (trimmedQuery.length > MAX_QUERY_LENGTH) {
+    throw new SearchBudgetError(
+      `Query length exceeds maximum limit of ${MAX_QUERY_LENGTH} characters`,
+      "QUERY_LENGTH_EXCEEDED",
+      400
+    );
+  }
+
+  if (!trimmedQuery || trimmedQuery.length < 2) {
     return { titles: [], categories: [] };
   }
 
-  const searchRegex = new RegExp(query.trim(), "i");
+  const boundedLimit = Math.max(1, Math.min(Number(limit) || 5, MAX_SUGGESTION_LIMIT));
+  const escapedPattern = escapeRegex(trimmedQuery);
+  const searchRegex = new RegExp(escapedPattern, "i");
 
-  const [titles, categories] = await Promise.all([
-    Prompt.find({ title: searchRegex, isActive: true })
-      .select("title")
-      .limit(limit)
-      .lean(),
-    Prompt.distinct("category", { category: searchRegex, isActive: true }).then((cats: string[]) =>
-      cats.slice(0, limit),
-    ),
-  ]);
+  try {
+    const [titles, categories] = await Promise.all([
+      Prompt.find({ title: searchRegex, isActive: true })
+        .select("title")
+        .limit(boundedLimit)
+        .maxTimeMS(MAX_SUGGESTION_TIME_MS)
+        .lean(),
+      Prompt.distinct("category", { category: searchRegex, isActive: true }).then((cats: string[]) =>
+        cats.slice(0, boundedLimit),
+      ),
+    ]);
 
-  return {
-    titles: titles.map((p: any) => p.title),
-    categories,
-  };
+    return {
+      titles: titles.map((p: any) => p.title),
+      categories,
+    };
+  } catch (error: any) {
+    if (error instanceof SearchBudgetError) throw error;
+    if (
+      error.name === "MongoServerError" &&
+      (error.code === 50 || error.message?.includes("time limit") || error.message?.includes("exceeded"))
+    ) {
+      throw new SearchBudgetError("Suggestion query execution time budget exceeded", "QUERY_TIMEOUT_EXCEEDED", 408);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -157,3 +210,4 @@ export async function getFeaturedPrompts(limit: number = 6) {
 
   return prompts;
 }
+

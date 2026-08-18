@@ -5,7 +5,7 @@
  *   ts-node server/scripts/runBackup.ts
  *
  * Required environment variables:
- *   MONGODB_URI, BACKUP_S3_BUCKET
+ *   MONGODB_URI, BACKUP_S3_BUCKET, BACKUP_MANIFEST_SIGNING_KEY
  *
  * Optional:
  *   BACKUP_S3_PREFIX, BACKUP_S3_REGION, BACKUP_ALERT_WEBHOOK

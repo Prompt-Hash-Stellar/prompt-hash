@@ -140,17 +140,39 @@ When adding a new external service:
 
 ---
 
-## AI Proxy Logging Privacy (Issue #159)
+## Standalone Express API Hardening (#169)
 
-Prompt text submitted to the improve-proxy and chat-proxy endpoints, and all
-model-generated response content, are classified as **sensitive data**. Neither
-must appear in application logs, error events, or telemetry records.
+The frontend CSP above governs the Vite/Vercel-served app. The standalone
+Express server (`server/src/server.ts`) is a separate deployment and has its
+own HTTP hardening, configured in `server/src/middleware/security.ts`:
 
-Application logs for proxy operations are limited to operational metadata:
-request correlation ID, request/response size in bytes, latency, HTTP status
-code, and a safe internal error code. Upstream error bodies are never logged or
-forwarded to clients.
+- **CORS**: Only origins listed in the `ALLOWED_ORIGINS` environment
+  variable (comma-separated) may make credentialed cross-origin requests.
+  Requests with no `Origin` header (server-to-server calls, curl, mobile
+  clients) are unaffected by CORS either way. There is no default-allow
+  fallback - an unset `ALLOWED_ORIGINS` means no browser origin is trusted.
+- **Defensive headers**: Helmet is applied globally (`X-Content-Type-Options`,
+  `X-Frame-Options`, HSTS, `X-Powered-By` removal, etc). Its CSP directive is
+  disabled here since this server serves JSON only, not HTML.
+- **Trusted proxy**: Set `TRUSTED_PROXY_HOPS` to the exact number of reverse
+  proxies/load balancers terminating traffic in front of the server process
+  (defaults to `1`, the common single-hop case). This is passed to Express's
+  `trust proxy` setting so `req.ip` - used by the rate limiters in
+  `middleware/rateLimiter.ts` - reflects the real client address instead of
+  an attacker-controlled `X-Forwarded-For` header. Deploying behind an extra
+  hop (e.g. a CDN in front of a load balancer) without updating this value
+  under-counts trusted hops and allows IP spoofing; over-counting it collapses
+  distinct clients onto the same rate-limit bucket.
+- **Request body limits**: `express.json()` is scoped per route class rather
+  than mounted once globally - a `100kb` default for most JSON APIs, and a
+  `2mb` budget for the routes that carry prompt content (`/api/prompts`,
+  `/api/versions`), which can legitimately be larger. Oversized bodies are
+  rejected with `413` before reaching any handler.
 
-See [`docs/proxy-logging-policy.md`](./proxy-logging-policy.md) for the full
-classification table, allowed telemetry fields, prohibited content, safe
-error-handling rules, and log-retention guidance.
+Required deployment configuration (set for every environment - local,
+staging, production):
+
+| Variable | Purpose | Example |
+| --- | --- | --- |
+| `ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API | `https://app.example.com,https://staging.example.com` |
+| `TRUSTED_PROXY_HOPS` | Number of trusted reverse-proxy hops in front of the server | `1` |

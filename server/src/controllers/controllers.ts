@@ -9,14 +9,26 @@ import {
   validateListingMetadata,
 } from "../services/listingValidation";
 import { cacheGet, cacheSet, cacheDel, cacheDelPattern, CACHE_KEYS } from "../services/cacheService";
-import {
-  generateRequestId,
-  logProxySuccess,
-  logProxyUpstreamError,
-  logProxyException,
-} from "../utils/proxyLogger";
+import { hashWalletAddress } from "../services/auditTrail";
 
 const API_BASE_URL = "https://secret-ai-gateway.onrender.com";
+
+/**
+ * Explicit allowlist of fields that are safe to expose on a public user
+ * profile lookup. Any new/private field added to the User model must be
+ * added here deliberately before it can ever be returned by the API -
+ * it is never exposed automatically.
+ */
+const toPublicUserProfile = (user: any) => ({
+  walletAddress: user.walletAddress,
+  username: user.username,
+  displayName: user.displayName,
+  bio: user.bio,
+  avatarUrl: user.avatarUrl,
+  socialLinks: user.socialLinks,
+  rating: user.rating,
+  createdAt: user.createdAt,
+});
 
 /* IMPROVE PROXY CONTROLLERS */
 
@@ -256,7 +268,11 @@ export const CreateUser = async (
     });
 
     if (existingUser) {
-      console.log("User already exists:", existingUser);
+      // Log only a hashed, non-reversible identifier - never the full user
+      // document (email, profile text, wallet address, etc.).
+      console.log("User already exists:", {
+        walletHash: hashWalletAddress(existingUser.walletAddress),
+      });
       return res.status(200).json({
         message: "Login successful",
       });
@@ -293,27 +309,35 @@ export const GetUsers = async (
   try {
     await connectDb();
 
-    // Get wallet address from search params if provided
-    const { searchParams } = new URL(req.url);
+    // Public profile lookups only - a single walletAddress or username must
+    // be provided. Anonymous bulk enumeration of the User collection is not
+    // permitted; there is no privileged/paginated role for this endpoint.
+    // Use a dummy base so this parses correctly whether req.url is relative
+    // (the normal Express case) or already absolute.
+    const { searchParams } = new URL(req.url, "http://localhost");
     const walletAddress = searchParams.get("walletAddress");
+    const username = searchParams.get("username");
 
-    let users;
-
-    if (walletAddress) {
-      users = await User.findOne({
-        walletAddress: walletAddress.toLowerCase(),
+    if (!walletAddress && !username) {
+      return res.status(400).json({
+        error:
+          "A walletAddress or username query parameter is required to look up a public profile",
       });
-
-      if (!users) {
-        return res.status(404).json({
-          error: "User not found",
-        });
-      }
-    } else {
-      users = await User.find({});
     }
 
-    return res.json(users);
+    const query = walletAddress
+      ? { walletAddress: walletAddress.toLowerCase() }
+      : { username };
+
+    const user = await User.findOne(query);
+
+    if (!user) {
+      return res.status(404).json({
+        error: "User not found",
+      });
+    }
+
+    return res.json(toPublicUserProfile(user));
   } catch (error) {
     console.error("Fetch users error:", error);
     return res.status(500).json({
