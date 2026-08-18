@@ -13,7 +13,7 @@ import searchRouter from "./routes/searchRoutes";
 import { fulfillmentRouter } from "./routes/fulfillmentRoutes";
 import { reconciliationRouter } from "./routes/reconciliationRoutes";
 import { reviewRouter } from "./routes/reviewRoutes";
-import { runBackup, getBackupHealth } from "./services/backupService";
+import { getBackupHealth } from "./services/backupService";
 import { IndexerState } from "./models/IndexerState";
 import {
   globalLimiter,
@@ -104,18 +104,6 @@ app.listen(port, () => {
   //   console.error("Failed to start Soroban Indexer:", err);
   // });
 
-  // DAILY AUTOMATED BACKUP — runs immediately on startup then every 24 h.
-  // Use BACKUP_S3_BUCKET env var to enable; silently skips if not configured.
-  if (process.env.BACKUP_S3_BUCKET) {
-    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
-    const triggerBackup = () => {
-      runBackup().catch((err) => {
-        console.error("[backup] Scheduled backup failed:", err?.message ?? err);
-      });
-    };
-    // Run once on startup, then on a 24-hour interval.
-    triggerBackup();
-    setInterval(triggerBackup, TWENTY_FOUR_HOURS);
-    console.log("[backup] Daily backup scheduler started.");
-  }
+  // Backups are scheduled only by backup.crontab. runBackup itself also takes a
+  // MongoDB lease, so overlapping cron/container invocations cannot run twice.
 });
