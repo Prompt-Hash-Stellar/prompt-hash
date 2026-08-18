@@ -9,6 +9,7 @@ import {
   validateListingMetadata,
 } from "../services/listingValidation";
 import { cacheGet, cacheSet, cacheDel, cacheDelPattern, CACHE_KEYS } from "../services/cacheService";
+import { hashWalletAddress } from "../services/auditTrail";
 
 const API_BASE_URL = "https://secret-ai-gateway.onrender.com";
 
@@ -215,7 +216,11 @@ export const CreateUser = async (
     });
 
     if (existingUser) {
-      console.log("User already exists:", existingUser);
+      // Log only a hashed, non-reversible identifier - never the full user
+      // document (email, profile text, wallet address, etc.).
+      console.log("User already exists:", {
+        walletHash: hashWalletAddress(existingUser.walletAddress),
+      });
       return res.status(200).json({
         message: "Login successful",
       });
