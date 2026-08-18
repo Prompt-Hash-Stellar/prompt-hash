@@ -15,7 +15,9 @@
     "start": "node build/server.js",
     "backup": "ts-node scripts/runBackup.ts",
     "reindex": "ts-node scripts/reIndexFromLedger.ts",
-    "reindex:dry-run": "ts-node scripts/reIndexFromLedger.ts --dry-run"
+    "reindex:dry-run": "ts-node scripts/reIndexFromLedger.ts --dry-run",
+    "dedupe-purchases": "ts-node scripts/dedupePurchases.ts",
+    "dedupe-purchases:dry-run": "ts-node scripts/dedupePurchases.ts --dry-run"
   },
   "files": [
     "build"

@@ -30,7 +30,10 @@ const purchaseSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-purchaseSchema.index({ promptId: 1, buyerWallet: 1 });
+// Enforce exactly one purchase/entitlement record per prompt+buyer pair at
+// the database level so concurrent confirmations cannot create duplicate
+// entitlements or leave version selection ambiguous.
+purchaseSchema.index({ promptId: 1, buyerWallet: 1 }, { unique: true });
 
 const Purchase = mongoose.models.Purchase || mongoose.model("Purchase", purchaseSchema);
 export default Purchase;
