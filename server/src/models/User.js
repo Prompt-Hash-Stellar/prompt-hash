@@ -45,6 +45,16 @@ const userSchema = new mongoose.Schema(
       min: 1,
       max: 5,
     },
+    email: {
+      type: String,
+      lowercase: true,
+      trim: true,
+      default: null,
+    },
+    notificationPreferences: {
+      PromptPurchased: { type: Boolean, default: true },
+      PromptUpdated: { type: Boolean, default: true },
+    },
   },
   {
     timestamps: true,
