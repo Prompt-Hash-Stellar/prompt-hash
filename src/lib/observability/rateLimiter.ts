@@ -16,6 +16,10 @@ const limits: Record<string, { authenticated: RateLimitConfig; unauthenticated: 
     unauthenticated: { max: 3, windowMs: 60_000 },
     authenticated: { max: 5, windowMs: 60_000 },
   },
+  upload: {
+    unauthenticated: { max: 5, windowMs: 60_000 },
+    authenticated: { max: 20, windowMs: 60_000 },
+  },
 };
 
 // In-memory LRU fallback used when Redis is unavailable.

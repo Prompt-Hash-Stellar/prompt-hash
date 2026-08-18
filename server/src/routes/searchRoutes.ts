@@ -7,6 +7,7 @@ import {
   getFeaturedPrompts,
 } from "../controllers/searchController";
 import { searchPublicPromptIndex } from "../services/promptSearchIndex";
+import { SearchBudgetError } from "../utils/searchUtils";
 
 const router = express.Router();
 
@@ -48,17 +49,25 @@ router.get(
       limit = "20",
     } = req.query;
 
-    const result = await searchPrompts({
-      query: query as string,
-      category: category as string,
-      minPrice: minPrice ? Number(minPrice) : undefined,
-      maxPrice: maxPrice ? Number(maxPrice) : undefined,
-      sortBy: sortBy as any,
-      page: Number(page),
-      limit: Number(limit),
-    });
+    try {
+      const result = await searchPrompts({
+        query: query as string,
+        category: category as string,
+        minPrice: minPrice ? Number(minPrice) : undefined,
+        maxPrice: maxPrice ? Number(maxPrice) : undefined,
+        sortBy: sortBy as any,
+        page: Number(page),
+        limit: Number(limit),
+      });
 
-    res.json(result);
+      res.json(result);
+    } catch (error: any) {
+      if (error instanceof SearchBudgetError) {
+        res.status(error.statusCode).json({ error: error.code, message: error.message });
+        return;
+      }
+      throw error;
+    }
   })
 );
 
@@ -74,12 +83,20 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const { query, limit = "5" } = req.query;
 
-    const result = await getSearchSuggestions(
-      query as string,
-      Number(limit)
-    );
+    try {
+      const result = await getSearchSuggestions(
+        query as string,
+        Number(limit)
+      );
 
-    res.json(result);
+      res.json(result);
+    } catch (error: any) {
+      if (error instanceof SearchBudgetError) {
+        res.status(error.statusCode).json({ error: error.code, message: error.message });
+        return;
+      }
+      throw error;
+    }
   })
 );
 
@@ -112,3 +129,4 @@ router.get(
 );
 
 export default router;
+

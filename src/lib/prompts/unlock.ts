@@ -13,17 +13,25 @@ export interface UnlockResult {
 
 async function parseApiError(response: Response): Promise<string> {
   const payload = (await response.json().catch(() => null)) as
-    | ApiErrorResponse
-    | { error?: string }
+    | (ApiErrorResponse & { requestId?: string })
+    | { error?: string; requestId?: string }
     | null;
 
   if (payload && typeof payload === "object" && "code" in payload && payload.code) {
     const code = payload.code as keyof typeof ERROR_MESSAGES;
-    return ERROR_MESSAGES[code] ?? payload.error ?? "Failed to unlock prompt.";
+    let baseMsg = ERROR_MESSAGES[code] ?? payload.error ?? "Failed to unlock prompt.";
+    if (payload.requestId) {
+      baseMsg += ` (Support Ref: ${payload.requestId})`;
+    }
+    return baseMsg;
   }
 
   if (payload && typeof payload === "object" && "error" in payload && payload.error) {
-    return String(payload.error);
+    let baseMsg = String(payload.error);
+    if (payload.requestId) {
+      baseMsg += ` (Support Ref: ${payload.requestId})`;
+    }
+    return baseMsg;
   }
 
   return "Failed to unlock prompt.";
@@ -41,10 +49,16 @@ function extractSignedMessage(
   return signature.signedMessage;
 }
 
-async function requestChallenge(address: string, promptId: string) {
+async function requestChallenge(address: string, promptId: string, correlationId?: string) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (correlationId) {
+    headers["X-Request-ID"] = correlationId;
+    headers["X-Correlation-ID"] = correlationId;
+  }
+
   const response = await fetch("/api/auth/challenge", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ address, promptId }),
   });
 
@@ -60,15 +74,24 @@ async function requestChallenge(address: string, promptId: string) {
   }>;
 }
 
-async function requestUnlock(params: {
-  token: string;
-  promptId: string;
-  address: string;
-  signedMessage: string;
-}) {
+async function requestUnlock(
+  params: {
+    token: string;
+    promptId: string;
+    address: string;
+    signedMessage: string;
+  },
+  correlationId?: string,
+) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (correlationId) {
+    headers["X-Request-ID"] = correlationId;
+    headers["X-Correlation-ID"] = correlationId;
+  }
+
   const response = await fetch("/api/prompts/unlock", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(params),
   });
 
@@ -98,8 +121,14 @@ export async function unlockPromptContent(
   signMessage: SignMessageFn,
 ): Promise<UnlockResult> {
   const id = normalizePromptId(promptId);
+  const correlationId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : "f-" + Math.random().toString(36).substring(2, 15) + "-" + Date.now().toString(36);
 
-  const challenge = await requestChallenge(address, id);
+  console.log(`[Unlock Flow] Started for Prompt ID ${id} with Correlation ID: ${correlationId}`);
+
+  const challenge = await requestChallenge(address, id, correlationId);
   const signature = await signMessage(challenge.challenge);
 
   if (!signature) {
@@ -112,7 +141,7 @@ export async function unlockPromptContent(
     promptId: id,
     address,
     signedMessage,
-  });
+  }, correlationId);
 
   const recomputedHash = await hashPromptPlaintext(unlocked.plaintext);
   if (unlocked.contentHash && recomputedHash !== unlocked.contentHash.toLowerCase()) {

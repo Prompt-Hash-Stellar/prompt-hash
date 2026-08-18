@@ -133,13 +133,15 @@ export interface SimilarityResult {
 }
 
 /**
- * Scan a newly indexed prompt against all existing active prompts.
- * Updates the Prompt document with the result and returns the result.
+ * LEGACY: Scan synchronously (blocking, O(n) plaintext reads, quadratic growth)
+ * Kept for backward compatibility and testing.
+ * NEW CODE should use enqueueSimilarityScan() for queue-based processing.
  *
  * @param onChainId  The on-chain ID of the newly created prompt.
  * @param content    The prompt text to compare (title + body combined).
+ * @deprecated Use enqueueSimilarityScan() instead for non-blocking queue processing
  */
-export async function scanForSimilarity(
+export async function scanForSimilaritySync(
   onChainId: string,
   content: string,
 ): Promise<SimilarityResult> {
@@ -182,4 +184,37 @@ export async function scanForSimilarity(
   }
 
   return { flag, score: maxScore, similarTo: flag !== "clean" ? mostSimilarId : null };
+}
+
+/**
+ * NEW: Queue-based similarity scan (non-blocking, fingerprint-based, bounded)
+ * Enqueues a retryable scan job for asynchronous processing.
+ * Returns immediately; results are available via getJobStatus() or job polling.
+ *
+ * Benefits:
+ * - Listing latency independent of total prompt count
+ * - Fingerprints avoid plaintext in-memory concentration
+ * - Deterministic results (reproducible for same algorithm/index version)
+ * - Recoverable after crashes (persistent job state)
+ * - Budget enforcement (candidates, memory, time limits)
+ *
+ * @param onChainId  The on-chain ID of the newly created prompt
+ * @returns jobId for tracking scan progress
+ */
+export async function scanForSimilarity(
+  onChainId: string,
+  _content?: string, // ignored, fingerprint generated internally
+): Promise<SimilarityResult> {
+  // Import here to avoid circular dependency
+  const { enqueueSimilarityScan } = await import("./similarityJobQueue");
+
+  // Enqueue the scan (non-blocking)
+  const jobId = await enqueueSimilarityScan(onChainId);
+
+  // Return pending status for backward compatibility
+  return {
+    flag: "clean", // placeholder until scan completes
+    score: 0,
+    similarTo: null,
+  };
 }

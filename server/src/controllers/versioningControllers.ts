@@ -66,23 +66,52 @@ export const RecordPurchase = async (req: Request, res: Response): Promise<Respo
     const prompt = await Prompt.findById(promptId);
     if (!prompt) return res.status(404).json({ error: "Prompt not found." });
 
-    const existing = await Purchase.findOne({
-      promptId,
-      buyerWallet: buyerWallet.toLowerCase(),
-    });
+    const normalizedBuyerWallet = buyerWallet.toLowerCase();
 
-    if (existing) {
-      return res.status(200).json({ message: "Already purchased.", versionIndex: existing.versionIndex });
+    // Idempotent upsert keyed by the unique (promptId, buyerWallet) index:
+    // concurrent confirmations for the same prompt/buyer race safely at the
+    // database level instead of via a find-then-create check, so at most one
+    // entitlement record can ever be created per pair.
+    let purchase;
+    let created = true;
+    try {
+      purchase = await Purchase.findOneAndUpdate(
+        { promptId, buyerWallet: normalizedBuyerWallet },
+        {
+          $setOnInsert: {
+            promptId,
+            buyerWallet: normalizedBuyerWallet,
+            versionIndex: prompt.currentVersionIndex ?? 1,
+            txHash: txHash ?? "",
+          },
+        },
+        { new: true, upsert: true, setDefaultsOnInsert: true },
+      );
+    } catch (upsertErr) {
+      // A duplicate-key error here means another concurrent request won the
+      // race between our upsert attempts; fall back to reading the record
+      // that request created rather than failing the request.
+      if ((upsertErr as { code?: number }).code === 11000) {
+        purchase = await Purchase.findOne({ promptId, buyerWallet: normalizedBuyerWallet });
+      } else {
+        throw upsertErr;
+      }
     }
 
-    const purchase = await Purchase.create({
-      promptId,
-      buyerWallet: buyerWallet.toLowerCase(),
-      versionIndex: prompt.currentVersionIndex ?? 1,
-      txHash: txHash ?? "",
-    });
+    if (!purchase) {
+      return res.status(500).json({ error: "Failed to record purchase." });
+    }
 
-    return res.status(201).json({ message: "Purchase recorded.", versionIndex: purchase.versionIndex });
+    // Detect whether this request actually inserted the record or found an
+    // existing one, purely to keep the response message informative.
+    created = purchase.createdAt.getTime() === purchase.updatedAt.getTime();
+
+    return res
+      .status(created ? 201 : 200)
+      .json({
+        message: created ? "Purchase recorded." : "Already purchased.",
+        versionIndex: purchase.versionIndex,
+      });
   } catch (err) {
     return res.status(500).json({ error: (err as Error).message });
   }
