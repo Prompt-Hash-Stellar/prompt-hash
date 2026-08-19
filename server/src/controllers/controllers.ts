@@ -11,7 +11,7 @@ import { openai } from "@ai-sdk/openai";
 import {
   validateListingMetadata,
 } from "../services/listingValidation";
-import { cacheGet, cacheSet, cacheDel, cacheDelPattern, CACHE_KEYS } from "../services/cacheService";
+import { cacheGetOrLoad, cacheDel, cacheDelPattern, CACHE_KEYS } from "../services/cacheService";
 import { hashWalletAddress } from "../services/auditTrail";
 import mongoose from "mongoose";
 import { issuePreviewToken, recordPreviewEvent } from "../services/previewAnalytics";
@@ -182,29 +182,26 @@ export const GetPrompts = async (
 
     // Build a deterministic cache key from the query params
     const cacheKey = CACHE_KEYS.promptList(`cat=${category ?? ""}&wallet=${walletAddress ?? ""}`);
-    const cached = await cacheGet(cacheKey);
-    if (cached) return res.json(JSON.parse(cached));
+    const prompts = await cacheGetOrLoad(cacheKey, async () => {
+      const query: any = { listingStatus: "published", isActive: true };
 
-    const query: any = { listingStatus: 'published', isActive: true };
-
-    if (category) {
-      query.category = category;
-    }
-
-    if (walletAddress) {
-      const user = await User.findOne({
-        walletAddress: walletAddress.toLowerCase(),
-      });
-      if (user) {
-        query.owner = user._id;
+      if (category) {
+        query.category = category;
       }
-    }
 
-    const prompts = await Prompt.find(query)
-      .populate("owner", "username walletAddress")
-      .sort({ createdAt: -1 });
+      if (walletAddress) {
+        const user = await User.findOne({
+          walletAddress: walletAddress.toLowerCase(),
+        });
+        if (user) {
+          query.owner = user._id;
+        }
+      }
 
-    await cacheSet(cacheKey, JSON.stringify(prompts), 60);
+      return Prompt.find(query)
+        .populate("owner", "username walletAddress")
+        .sort({ createdAt: -1 });
+    });
 
     return res.json(prompts);
   } catch (error) {
