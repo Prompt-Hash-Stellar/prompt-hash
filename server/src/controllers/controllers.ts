@@ -473,35 +473,18 @@ export const GetPromptReports = async (
   req: Request,
   res: Response,
 ): Promise<Response<any>> => {
-  try {
-    await connectDb();
+  const { searchParams } = new URL(req.url);
+  const promptId = searchParams.get("promptId");
 
-    // Check admin authentication (placeholder)
-    const adminToken = req.headers.authorization?.split(" ")[1];
-    if (!adminToken) {
-      return res.status(401).json({
-        error: "Unauthorized: Admin token required",
-      });
-    }
+  const result = await listPromptReports({
+    authorizationHeader: req.headers.authorization,
+    promptId,
+    requestId: req.headers["x-request-id"]
+      ? String(req.headers["x-request-id"])
+      : undefined,
+  });
 
-    const { searchParams } = new URL(req.url);
-    const promptId = searchParams.get("promptId");
-
-    const query: any = {};
-    if (promptId) {
-      query.promptId = promptId;
-    }
-
-    const reports = await Report.find(query)
-      .sort({ createdAt: -1 });
-
-    return res.json(reports);
-  } catch (err) {
-    console.error("Get reports error:", err);
-    return res.status(500).json({
-      error: (err as Error).message || "Failed to fetch reports",
-    });
-  }
+  return res.status(result.status).json(result.body);
 };
 
 // ─── Issue #257: Prompt Preview Analytics ─────────────────────────────────────

@@ -236,6 +236,63 @@ Issues a short-lived challenge token for wallet verification.
 
 Verifies the wallet signature and on-chain entitlement before returning decrypted content.
 
+## Report Moderation Endpoints
+
+### Submit an abuse report
+
+`POST /api/prompts/reports`
+
+Submits a moderation report for a prompt (no authentication required).
+
+### List abuse reports
+
+`GET /api/prompts/reports`
+
+Lists abuse reports for moderation. This endpoint is restricted to verified
+report reviewers and admins.
+
+**Authentication:** `Authorization: Bearer <report-review-token>`
+
+A report-review token is an HMAC-SHA256-signed credential (`<payload>.<signature>`)
+issued with the server's `REPORT_REVIEW_SECRET`. The token carries a verified
+principal (`sub`), a role, a token id (`jti`), and an expiry. The endpoint
+rejects missing, malformed, empty, invalid, expired, and revoked credentials
+with `401`, and rejects valid credentials with a non-reviewer role with `403`.
+
+The caller's identity and role are derived exclusively from the verified token —
+never from query parameters, request bodies, or other client-controlled fields.
+
+Allowed roles:
+
+| Role | Description |
+|------|-------------|
+| `report_reviewer` | Dedicated report-review role |
+| `admin` | Admin superset role |
+
+**Query parameters:**
+
+- `promptId` (optional) — filter reports to a single prompt.
+
+**Response:** an array of allowlisted report DTOs. The reporter's wallet address
+is never returned by this endpoint. The raw report model and internal database
+fields (`_id`, `__v`) are excluded.
+
+```json
+[
+  {
+    "id": "6650f1...",
+    "promptId": "42",
+    "reason": "plagiarism",
+    "description": "Copied from another creator.",
+    "status": "pending",
+    "adminNotes": "",
+    "resolvedAt": null,
+    "createdAt": "2026-08-16T10:00:00.000Z",
+    "updatedAt": "2026-08-16T10:00:00.000Z"
+  }
+]
+```
+
 ## Notes For Frontend Contributors
 
 - Listing metadata is normalized server-side before persistence.
