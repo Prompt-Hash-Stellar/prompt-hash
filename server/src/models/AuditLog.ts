@@ -15,8 +15,9 @@ export type AuditAction =
   | "kms_break_glass_triggered"
   | "kms_key_revoked"
   | "kms_key_suspended"
-  | "report_review_access"
-  | "report_review_denied";
+  | "payout_update_requested"
+  | "payout_update_success"
+  | "payout_update_failure";
 
 export type AuditResult = "success" | "failure" | "blocked";
 
@@ -39,8 +40,9 @@ const auditLogSchema = new mongoose.Schema(
         "kms_break_glass_triggered",
         "kms_key_revoked",
         "kms_key_suspended",
-        "report_review_access",
-        "report_review_denied",
+        "payout_update_requested",
+        "payout_update_success",
+        "payout_update_failure",
       ] as AuditAction[],
       index: true,
     },
@@ -93,9 +95,10 @@ const auditLogSchema = new mongoose.Schema(
 
 // Hash chaining middleware for tamper-evident audit logs
 auditLogSchema.pre("save", async function () {
-  const latestDoc = await (this.constructor as any)
-    .findOne()
-    .sort({ createdAt: -1 });
+  try {
+    const latestDoc = await (this.constructor as any)
+      .findOne()
+      .sort({ createdAt: -1 });
 
   const prevHash = latestDoc ? latestDoc.hash || "" : "0".repeat(64);
   this.set("previousHash", prevHash);
@@ -116,7 +119,10 @@ auditLogSchema.pre("save", async function () {
     .update(fieldsToHash.join("|"))
     .digest("hex");
 
-  this.set("hash", currentHash);
+    this.set("hash", currentHash);
+  } catch (err: any) {
+    throw err;
+  }
 });
 
 // Compound indexes for common incident-review queries.
