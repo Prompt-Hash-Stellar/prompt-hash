@@ -1,3 +1,6 @@
+import { Buffer } from "buffer";
+import { Keypair, StrKey } from "@stellar/stellar-sdk";
+import { AuditLog } from "../models/AuditLog";
 import { Request, Response } from "express";
 import connectDb from "../db/connectDb";
 import User from "../models/User";
@@ -735,5 +738,120 @@ export const ArchivePrompt = async (
     return res.status(500).json({
       error: (err as Error).message || "Failed to archive prompt",
     });
+  }
+};
+
+/* PAYOUT CONTROLLERS */
+
+export const GetPayoutSettings = async (
+  req: Request,
+  res: Response,
+): Promise<Response<any>> => {
+  try {
+    await connectDb();
+    const { walletAddress } = req.params;
+    const user = await User.findOne({ walletAddress: walletAddress.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    return res.json(user.payoutSettings || { payoutAddress: user.walletAddress });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to fetch payout settings" });
+  }
+};
+
+export const UpdatePayoutSettings = async (
+  req: Request,
+  res: Response,
+): Promise<Response<any>> => {
+  try {
+    await connectDb();
+    const { walletAddress } = req.params;
+    const { payoutAddress, signature, signedMessage } = req.body;
+
+    // Validate StrKey
+    if (!StrKey.isValidEd25519PublicKey(payoutAddress)) {
+      return res.status(400).json({ error: "Invalid Stellar payout address" });
+    }
+
+    if (!signature || !signedMessage) {
+      return res.status(400).json({ error: "Signature and signedMessage are required" });
+    }
+
+    // Verify recent re-auth signature
+    try {
+      const keypair = Keypair.fromPublicKey(walletAddress);
+      if (!keypair.verify(Buffer.from(signedMessage, "utf8"), Buffer.from(signature, "base64"))) {
+        await AuditLog.create({
+          action: "payout_update_failure",
+          result: "failure",
+          walletAddress,
+          reason: "Invalid signature",
+        });
+        return res.status(401).json({ error: "Invalid signature" });
+      }
+
+      // Format: prompt-hash:update-payout:{payoutAddress}:{timestamp}
+      const parts = signedMessage.split(":");
+      if (parts[0] !== "prompt-hash" || parts[1] !== "update-payout" || parts[2] !== payoutAddress) {
+        await AuditLog.create({
+          action: "payout_update_failure",
+          result: "failure",
+          walletAddress,
+          reason: "Invalid payload format or address mismatch",
+        });
+        return res.status(400).json({ error: "Invalid signed message payload" });
+      }
+
+      const timestamp = parseInt(parts[3], 10);
+      if (isNaN(timestamp) || Date.now() - timestamp > 5 * 60 * 1000) {
+        await AuditLog.create({
+          action: "payout_update_failure",
+          result: "failure",
+          walletAddress,
+          reason: "Signature expired",
+        });
+        return res.status(400).json({ error: "Signature expired (older than 5 minutes)" });
+      }
+
+    } catch (err) {
+      await AuditLog.create({
+        action: "payout_update_failure",
+        result: "failure",
+        walletAddress,
+        reason: "Signature verification failed",
+      });
+      return res.status(401).json({ error: "Signature verification failed" });
+    }
+
+    const user = await User.findOne({ walletAddress: walletAddress.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Impose a cooling-off window (24 hours)
+    const coolingOffMs = 24 * 60 * 60 * 1000;
+    const effectiveAt = new Date(Date.now() + coolingOffMs);
+
+    user.payoutSettings = {
+      payoutAddress: user.payoutSettings?.payoutAddress || user.walletAddress,
+      pendingPayoutAddress: payoutAddress,
+      payoutAddressEffectiveAt: effectiveAt,
+      payoutVersion: (user.payoutSettings?.payoutVersion || 0) + 1,
+    };
+
+    await user.save();
+
+    await AuditLog.create({
+      action: "payout_update_success",
+      result: "success",
+      walletAddress,
+      reason: "Payout address update requested with cooling off",
+    });
+
+    return res.json(user.payoutSettings);
+  } catch (err) {
+    console.error("Update payout settings error:", err);
+    return res.status(500).json({ error: "Failed to update payout settings" });
   }
 };

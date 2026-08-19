@@ -45,15 +45,11 @@ const userSchema = new mongoose.Schema(
       min: 1,
       max: 5,
     },
-    email: {
-      type: String,
-      lowercase: true,
-      trim: true,
-      default: null,
-    },
-    notificationPreferences: {
-      PromptPurchased: { type: Boolean, default: true },
-      PromptUpdated: { type: Boolean, default: true },
+    payoutSettings: {
+      payoutAddress: { type: String, trim: true, default: "" },
+      pendingPayoutAddress: { type: String, trim: true, default: null },
+      payoutAddressEffectiveAt: { type: Date, default: null },
+      payoutVersion: { type: Number, default: 1 },
     },
   },
   {
