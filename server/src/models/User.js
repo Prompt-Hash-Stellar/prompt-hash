@@ -45,6 +45,12 @@ const userSchema = new mongoose.Schema(
       min: 1,
       max: 5,
     },
+    payoutSettings: {
+      payoutAddress: { type: String, trim: true, default: "" },
+      pendingPayoutAddress: { type: String, trim: true, default: null },
+      payoutAddressEffectiveAt: { type: Date, default: null },
+      payoutVersion: { type: Number, default: 1 },
+    },
   },
   {
     timestamps: true,
