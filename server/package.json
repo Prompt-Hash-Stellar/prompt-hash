@@ -34,7 +34,7 @@
   "author": "wilfrid",
   "license": "MIT",
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.53",
+    "@ai-sdk/openai": "^4.0.42",
     "@aws-sdk/client-s3": "^3.864.0",
     "@aws-sdk/lib-storage": "^3.864.0",
     "@sentry/node": "^10.70.0",
