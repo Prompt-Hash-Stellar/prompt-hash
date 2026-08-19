@@ -8,6 +8,7 @@ import {
   GetPromptReports,
   RecordPreview,
   GetPreviewStats,
+  GetPreviewToken,
 } from "../controllers/controllers";
 
 export const promptRouter = express.Router();
@@ -39,6 +40,7 @@ promptRouter.get("/buyer/:walletAddress/saved", GetSavedPrompts);
 promptRouter.get("/creator/:walletAddress/drafts", GetDraftPrompts);
 
 // Preview analytics (#257)
+promptRouter.get("/preview/token", GetPreviewToken);
 promptRouter.post("/preview", RecordPreview);
 promptRouter.get("/preview/stats", GetPreviewStats);
 

@@ -13,6 +13,9 @@ import {
 } from "../services/listingValidation";
 import { cacheGet, cacheSet, cacheDel, cacheDelPattern, CACHE_KEYS } from "../services/cacheService";
 import { hashWalletAddress } from "../services/auditTrail";
+import mongoose from "mongoose";
+import { issuePreviewToken, recordPreviewEvent } from "../services/previewAnalytics";
+import { PreviewEvent } from "../models/PreviewEvent";
 
 const API_BASE_URL = "https://secret-ai-gateway.onrender.com";
 
@@ -444,22 +447,34 @@ export const GetPromptReports = async (
 
 // ─── Issue #257: Prompt Preview Analytics ─────────────────────────────────────
 
+export const GetPreviewToken = async (
+  req: Request,
+  res: Response,
+): Promise<Response<any>> => {
+  await connectDb();
+  const promptId = String(req.query.promptId || "");
+  if (!mongoose.isValidObjectId(promptId)) return res.status(404).json({ error: "Prompt not found." });
+  const prompt = await Prompt.findOne({ _id: promptId, isActive: true, listingStatus: "published" }).select("_id");
+  if (!prompt) return res.status(404).json({ error: "Prompt not found." });
+  return res.json({ token: issuePreviewToken(promptId) });
+};
+
 export const RecordPreview = async (
   req: Request,
   res: Response,
 ): Promise<Response<any>> => {
   try {
     await connectDb();
-    const { promptId } = req.body;
+    const { promptId, sessionId, token } = req.body;
 
-    if (!promptId) {
-      return res.status(400).json({ error: "promptId is required." });
+    if (!promptId || !sessionId || typeof sessionId !== "string" || sessionId.length < 16 || sessionId.length > 128) {
+      return res.status(400).json({ error: "promptId and a valid sessionId are required." });
     }
-
-    // Increment preview count - avoid storing who viewed (privacy-safe)
-    await Prompt.findByIdAndUpdate(promptId, { $inc: { previewCount: 1 } });
-
-    return res.status(200).json({ success: true });
+    const result = await recordPreviewEvent({
+      promptId, sessionId, token: String(token || ""), ip: req.ip || req.socket.remoteAddress || "unknown",
+      userAgent: req.get("user-agent") || "",
+    });
+    return res.status(result.status).json({ success: result.counted, reason: result.reason });
   } catch (err) {
     console.error("Record preview error:", err);
     return res.status(500).json({
@@ -496,9 +511,18 @@ export const GetPreviewStats = async (
       0,
     );
 
+    // Raw decision records remain separate from the derived prompt counters,
+    // but expose aggregate reasons so creators can explain filtered traffic.
+    const eventSummary = await PreviewEvent.aggregate([
+      { $match: { promptId: { $in: prompts.map((prompt: any) => prompt._id) } } },
+      { $group: { _id: { outcome: "$outcome", reason: "$reason" }, count: { $sum: 1 } } },
+      { $project: { _id: 0, outcome: "$_id.outcome", reason: "$_id.reason", count: 1 } },
+    ]);
+
     return res.json({
       totalPreviews,
       prompts,
+      eventSummary,
     });
   } catch (err) {
     console.error("Get preview stats error:", err);
