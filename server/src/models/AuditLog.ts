@@ -100,24 +100,24 @@ auditLogSchema.pre("save", async function () {
       .findOne()
       .sort({ createdAt: -1 });
 
-    const prevHash = latestDoc ? latestDoc.hash || "" : "0".repeat(64);
-    this.set("previousHash", prevHash);
+  const prevHash = latestDoc ? latestDoc.hash || "" : "0".repeat(64);
+  this.set("previousHash", prevHash);
 
-    const fieldsToHash = [
-      this.get("action") || "",
-      this.get("result") || "",
-      this.get("promptId") || "",
-      this.get("walletAddress") || "",
-      this.get("requestId") || "",
-      this.get("clientIp") || "",
-      this.get("reason") || "",
-      prevHash,
-    ];
+  const fieldsToHash = [
+    this.get("action") || "",
+    this.get("result") || "",
+    this.get("promptId") || "",
+    this.get("walletAddress") || "",
+    this.get("requestId") || "",
+    this.get("clientIp") || "",
+    this.get("reason") || "",
+    prevHash,
+  ];
 
-    const currentHash = crypto
-      .createHash("sha256")
-      .update(fieldsToHash.join("|"))
-      .digest("hex");
+  const currentHash = crypto
+    .createHash("sha256")
+    .update(fieldsToHash.join("|"))
+    .digest("hex");
 
     this.set("hash", currentHash);
   } catch (err: any) {

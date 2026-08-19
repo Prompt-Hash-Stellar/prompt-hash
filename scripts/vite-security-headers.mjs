@@ -6,8 +6,6 @@
  * Vite HMR (`'unsafe-eval'`, `'unsafe-inline'` for styles, websocket
  * connections to the dev server) and local API proxying.
  */
-import type { Plugin } from "vite";
-
 const DEV_CSP = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
@@ -22,7 +20,7 @@ const DEV_CSP = [
   "worker-src 'self' blob:",
 ].join("; ");
 
-export function securityHeadersPlugin(): Plugin {
+export function securityHeadersPlugin() {
   return {
     name: "security-headers",
     configureServer(server) {
