@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "./logger";
 import { metrics } from "./metrics";
+import { getTrustedIp } from "../rateLimiter/core";
 
 export type ApiHandler = (_req: any, _res: any) => Promise<void> | void;
 
@@ -10,12 +11,17 @@ export function withObservability(handler: ApiHandler, name: string): ApiHandler
     const requestId = (typeof incomingId === "string" && incomingId.trim()) ? incomingId : uuidv4();
     const startTime = Date.now();
 
-    // Attach request context for logging
+
+    const clientIp = getTrustedIp(
+      req.socket?.remoteAddress,
+      req.headers["x-forwarded-for"] as string
+    );
+
     const childLogger = logger.child({
       requestId,
       method: req.method,
       url: req.url,
-      clientIp: req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+      clientIp,
     });
 
     res.setHeader("X-Request-ID", requestId);
