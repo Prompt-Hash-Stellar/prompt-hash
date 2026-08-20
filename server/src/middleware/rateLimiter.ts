@@ -1,105 +1,55 @@
 import { Request, Response, NextFunction } from "express";
+// @ts-ignore
+import { checkRateLimit, buildRateLimitKey, getTrustedIp, RateLimitConfig } from "../../../src/lib/rateLimiter/core";
 
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
-
-interface RateLimitOptions {
-  windowMs: number;
-  maxRequests: number;
-  keyGenerator?: (_req: Request) => string;
+export interface MiddlewareRateLimitOptions extends RateLimitConfig {
+  routeName: string;
   message?: string;
 }
 
-const stores = new Map<string, Map<string, RateLimitEntry>>();
+export function expressRateLimit(options: MiddlewareRateLimitOptions) {
+  const { message = "Too many requests, please try again later.", ...config } = options;
 
-function getStore(name: string): Map<string, RateLimitEntry> {
-  if (!stores.has(name)) {
-    stores.set(name, new Map());
-  }
-  return stores.get(name)!;
-}
+  return async (req: Request, res: Response, next: NextFunction) => {
+    // Rely on Express's proxy trust if configured, otherwise use our secure fallback
+    const clientIp = req.ip || getTrustedIp(req.socket.remoteAddress, req.headers["x-forwarded-for"] as string);
 
-function cleanupStore(store: Map<string, RateLimitEntry>, windowMs: number) {
-  const now = Date.now();
-  for (const [key, entry] of store) {
-    if (now > entry.resetAt + windowMs) {
-      store.delete(key);
-    }
-  }
-}
+    const walletAddress = req.body?.walletAddress || req.query?.walletAddress as string | undefined;
+    const principal = req.headers["x-principal"] as string | undefined;
 
-export function rateLimit(options: RateLimitOptions) {
-  const {
-    windowMs,
-    maxRequests,
-    keyGenerator = (req) => req.ip || req.socket.remoteAddress || "unknown",
-    message = "Too many requests, please try again later.",
-  } = options;
-
-  const storeName = `rl_${windowMs}_${maxRequests}`;
-  const store = getStore(storeName);
-
-  const cleanupInterval = setInterval(() => {
-    cleanupStore(store, windowMs);
-  }, windowMs);
-
-  if (cleanupInterval.unref) {
-    cleanupInterval.unref();
-  }
-
-  return (req: Request, res: Response, next: NextFunction) => {
-    const key = keyGenerator(req);
+    const bucketKey = buildRateLimitKey(config.routeName, clientIp, walletAddress, principal);
     const now = Date.now();
-    const entry = store.get(key);
 
-    if (!entry || now > entry.resetAt) {
-      store.set(key, { count: 1, resetAt: now + windowMs });
-      res.setHeader("X-RateLimit-Limit", maxRequests);
-      res.setHeader("X-RateLimit-Remaining", maxRequests - 1);
-      res.setHeader("X-RateLimit-Reset", Math.ceil((now + windowMs) / 1000));
-      return next();
-    }
+    const { success, limit, remaining, reset } = await checkRateLimit(bucketKey, config);
 
-    if (entry.count >= maxRequests) {
-      const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
-      res.setHeader("Retry-After", retryAfter);
-      res.setHeader("X-RateLimit-Limit", maxRequests);
-      res.setHeader("X-RateLimit-Remaining", 0);
-      res.setHeader("X-RateLimit-Reset", Math.ceil(entry.resetAt / 1000));
+    const resetTimeInSeconds = Math.ceil((now + reset) / 1000);
+
+    res.setHeader("X-RateLimit-Limit", limit);
+    res.setHeader("X-RateLimit-Remaining", remaining);
+    res.setHeader("X-RateLimit-Reset", resetTimeInSeconds);
+
+    if (!success) {
+      res.setHeader("Retry-After", Math.ceil(reset / 1000));
       return res.status(429).json({ error: message });
     }
 
-    entry.count += 1;
-    res.setHeader("X-RateLimit-Limit", maxRequests);
-    res.setHeader("X-RateLimit-Remaining", maxRequests - entry.count);
-    res.setHeader("X-RateLimit-Reset", Math.ceil(entry.resetAt / 1000));
     next();
   };
 }
 
-// Pre-configured limiters for common use cases
-export const globalLimiter = rateLimit({
+// Pre-configured global limiters
+export const authLimiter = expressRateLimit({
+  routeName: "auth",
   windowMs: 15 * 60 * 1000,
-  maxRequests: 100,
-  message: "Too many requests from this IP, please try again later.",
-});
-
-export const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  maxRequests: 20,
+  max: 20,
+  fallbackPolicy: "strict-memory",
   message: "Too many authentication attempts, please try again later.",
 });
 
-export const strictLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  maxRequests: 10,
-  message: "Rate limit exceeded for this endpoint.",
-});
 
-export const chatLimiter = rateLimit({
+export const strictLimiter = expressRateLimit({
+  routeName: "critical-mutation",
   windowMs: 60 * 1000,
-  maxRequests: 30,
-  message: "Too many chat requests, please slow down.",
+  max: 10,
+  fallbackPolicy: "fail-closed", // Outage rejects to prevent abuse
 });
