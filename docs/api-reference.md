@@ -284,7 +284,43 @@ Example response (201):
 }
 ```
 
-**Important:** The `secret` is returned only on creation. Store it securely — you need it to verify signatures.
+**Important:** The `secret` is returned on creation **and on every update** (a new secret is generated each time). Store it securely — you need it to verify signatures. The secret is never included in `GET` responses.
+
+### Updating a webhook (secret rotation)
+
+Posting to `/api/webhooks` with an existing `walletAddress` updates the subscription and **rotates its secret**.
+
+Example response (200):
+
+```json
+{
+  "message": "Webhook updated.",
+  "id": "6650f1...",
+  "secret": "b2c3d4...",
+  "secretRotated": true,
+  "previousSecretExpiresAt": "2026-07-20T12:05:00.000Z"
+}
+```
+
+Rotation semantics:
+
+- The returned `secret` is the value actually persisted and is what verifies the next delivery. Store it and replace your old secret immediately.
+- The previous secret remains valid for a bounded **5-minute overlap window** (`previousSecretExpiresAt`) so deliveries already signed with it — including retries in flight — still verify.
+- After the overlap window expires, only the new secret is accepted.
+- Concurrent updates are serialized; a caller always receives the secret that was atomically persisted.
+
+When verifying signatures, accept the current secret plus any previous secret whose overlap has not expired:
+
+```typescript
+function verifyDeliverySignature(currentSecret, previousSecrets, body, signature, now = Date.now()) {
+  if (verifyWebhookSignature(currentSecret, body, signature)) return true;
+  for (const entry of previousSecrets ?? []) {
+    const expiresAt = new Date(entry.expiresAt).getTime();
+    if (expiresAt > now && verifyWebhookSignature(entry.secret, body, signature)) return true;
+  }
+  return false;
+}
+```
 
 ### Get webhook subscription
 

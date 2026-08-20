@@ -1,36 +1,10 @@
 import { withObservability } from "../../src/lib/observability/wrapper";
 import connectDb from "../../server/src/db/connectDb";
 import WebhookSubscription from "../../server/src/models/WebhookSubscription";
-import { ALLOWED_EVENTS } from "../../server/src/services/webhookDispatcher";
-import { randomBytes } from "crypto";
-import { verifyChallengeSignature } from "../../src/lib/auth/challenge";
-
-const ADMIN_TOKEN = process.env.ADMIN_ROTATION_TOKEN || "";
-
-function isAdminRequest(req: any) {
-  const auth = String(req.headers?.authorization || req.headers?.Authorization || "");
-  if (!auth.startsWith("Bearer ")) return false;
-  const token = auth.slice("Bearer ".length).trim();
-  return token && ADMIN_TOKEN && token === ADMIN_TOKEN;
-}
-
-function validateSignedOwner(req: any, address?: string) {
-  const addr = String(address ?? req.body?.walletAddress ?? req.query?.walletAddress ?? "").toLowerCase();
-  const signedMessage = req.body?.signedMessage ?? req.query?.signedMessage;
-  const timestamp = req.body?.timestamp ?? req.query?.timestamp;
-  if (!addr || !signedMessage || !timestamp) return null;
-  const expected = `prompt-hash webhooks:${addr}:${timestamp}`;
-  try {
-    if (verifyChallengeSignature(addr, expected, String(signedMessage))) {
-      return addr;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-import { validateWebhookUrl } from "../../server/src/services/ssrfProtection";
+import {
+  registerOrUpdateWebhook,
+  WebhookUpdateConflictError,
+} from "../../server/src/services/webhookSubscriptionService";
 
 async function handler(req: any, res: any) {
   await connectDb();
@@ -52,14 +26,9 @@ async function handler(req: any, res: any) {
       res.status(200).json(sub);
       return;
     }
-
-    // For creators: require signed ownership proof
-    const owner = validateSignedOwner(req, undefined);
-    if (!owner) {
-      res.status(401).json({ error: "Unauthorized: signed ownership proof required." });
-      return;
-    }
-    const sub = await WebhookSubscription.findOne({ walletAddress: owner }).select("-secret");
+    const sub = await WebhookSubscription.findOne({
+      walletAddress: String(walletAddress).toLowerCase(),
+    }).select("-secret -previousSecrets");
     if (!sub) {
       res.status(404).json({ error: "No webhook registered for this wallet." });
       return;
@@ -94,24 +63,22 @@ async function handler(req: any, res: any) {
       return;
     }
 
-    const secret = randomBytes(32).toString("hex");
-    const resolvedEvents = Array.isArray(events) ? events.filter((e: string) => ALLOWED_EVENTS.includes(e as any)) : ["PromptPurchased"];
-
-    const existing = await WebhookSubscription.findOne({ walletAddress: owner });
-
-    if (existing) {
-      existing.url = url;
-      existing.events = resolvedEvents;
-      existing.active = true;
-      existing.failureCount = 0;
-      await existing.save();
-      res.status(200).json({ message: "Webhook updated.", id: existing._id, secret });
-      return;
+    try {
+      const result = await registerOrUpdateWebhook({ walletAddress, url, events });
+      res.status(result.status).json({
+        message: result.message,
+        id: result.id,
+        secret: result.secret,
+        secretRotated: result.secretRotated,
+        previousSecretExpiresAt: result.previousSecretExpiresAt,
+      });
+    } catch (err) {
+      if (err instanceof WebhookUpdateConflictError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
     }
-
-    const sub = new WebhookSubscription({ walletAddress: owner, url, secret, events: resolvedEvents });
-    await sub.save();
-    res.status(201).json({ message: "Webhook registered.", id: sub._id, secret });
     return;
   }
 

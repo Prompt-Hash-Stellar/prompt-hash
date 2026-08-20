@@ -41,7 +41,43 @@ export function verifySignature(
   return result === 0;
 }
 
-import { safeDeliverWebhook } from "./ssrfProtection";
+export interface WebhookSecretEntry {
+  secret: string;
+  expiresAt?: Date | string | null;
+}
+
+/**
+ * Verify a delivery signature against the current secret and, during the
+ * bounded rotation overlap window, any non-expired previous secrets.
+ *
+ * Rotating a webhook secret keeps the old secret valid for a short grace
+ * period (see WEBHOOK_SECRET_OVERLAP_MS in webhookSubscriptionService) so
+ * deliveries already signed with the old secret — including retries in flight —
+ * still verify. Once a previous secret's `expiresAt` passes, it is rejected.
+ */
+export function verifyDeliverySignature(
+  currentSecret: string,
+  previousSecrets: WebhookSecretEntry[] | null | undefined,
+  body: string,
+  signature: string,
+  now: number = Date.now(),
+): boolean {
+  if (verifySignature(currentSecret, body, signature)) return true;
+
+  if (!previousSecrets || previousSecrets.length === 0) return false;
+
+  for (const entry of previousSecrets) {
+    if (!entry || !entry.secret) continue;
+    const expiresAt = entry.expiresAt
+      ? new Date(entry.expiresAt).getTime()
+      : 0;
+    if (expiresAt > now && verifySignature(entry.secret, body, signature)) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 function computeRetryDelay(attempt: number): number {
   return BASE_DELAY_MS * Math.pow(2, attempt);

@@ -15,9 +15,7 @@ export type AuditAction =
   | "kms_break_glass_triggered"
   | "kms_key_revoked"
   | "kms_key_suspended"
-  | "payout_update_requested"
-  | "payout_update_success"
-  | "payout_update_failure";
+  | "webhook_secret_rotated";
 
 export type AuditResult = "success" | "failure" | "blocked";
 
@@ -40,9 +38,7 @@ const auditLogSchema = new mongoose.Schema(
         "kms_break_glass_triggered",
         "kms_key_revoked",
         "kms_key_suspended",
-        "payout_update_requested",
-        "payout_update_success",
-        "payout_update_failure",
+        "webhook_secret_rotated",
       ] as AuditAction[],
       index: true,
     },

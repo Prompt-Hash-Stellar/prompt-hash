@@ -28,7 +28,13 @@ jest.mock("../models/WebhookDeliveryLog", () => {
   };
 });
 
-import { signPayload, verifySignature, dispatchEvent, ALLOWED_EVENTS } from "../services/webhookDispatcher";
+import {
+  signPayload,
+  verifySignature,
+  verifyDeliverySignature,
+  dispatchEvent,
+  ALLOWED_EVENTS,
+} from "../services/webhookDispatcher";
 
 const TEST_SECRET = "test-webhook-secret-key-32-chars-long!";
 
@@ -99,6 +105,64 @@ describe("verifySignature", () => {
     const elapsed = Date.now() - start;
 
     expect(elapsed).toBeLessThan(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyDeliverySignature (bounded secret-rotation overlap)
+// ---------------------------------------------------------------------------
+
+describe("verifyDeliverySignature", () => {
+  const CURRENT_SECRET = "current-secret";
+  const PREVIOUS_SECRET = "previous-secret";
+  const body = '{"event":"PromptPurchased"}';
+  const NOW = 1_700_000_000_000;
+
+  it("accepts a signature signed with the current secret", () => {
+    const sig = signPayload(CURRENT_SECRET, body);
+    expect(
+      verifyDeliverySignature(CURRENT_SECRET, [], body, sig, NOW),
+    ).toBe(true);
+  });
+
+  it("accepts a signature signed with a previous secret during the overlap", () => {
+    const sig = signPayload(PREVIOUS_SECRET, body);
+    const previousSecrets = [
+      { secret: PREVIOUS_SECRET, expiresAt: new Date(NOW + 60_000) },
+    ];
+    expect(
+      verifyDeliverySignature(CURRENT_SECRET, previousSecrets, body, sig, NOW),
+    ).toBe(true);
+  });
+
+  it("rejects a previous secret once the overlap has expired", () => {
+    const sig = signPayload(PREVIOUS_SECRET, body);
+    const previousSecrets = [
+      { secret: PREVIOUS_SECRET, expiresAt: new Date(NOW - 1) },
+    ];
+    expect(
+      verifyDeliverySignature(CURRENT_SECRET, previousSecrets, body, sig, NOW),
+    ).toBe(false);
+  });
+
+  it("rejects a signature that matches no current or valid previous secret", () => {
+    const sig = signPayload("unrelated-secret", body);
+    const previousSecrets = [
+      { secret: PREVIOUS_SECRET, expiresAt: new Date(NOW + 60_000) },
+    ];
+    expect(
+      verifyDeliverySignature(CURRENT_SECRET, previousSecrets, body, sig, NOW),
+    ).toBe(false);
+  });
+
+  it("handles a missing previousSecrets array", () => {
+    const sig = signPayload(CURRENT_SECRET, body);
+    expect(
+      verifyDeliverySignature(CURRENT_SECRET, null, body, sig, NOW),
+    ).toBe(true);
+    expect(
+      verifyDeliverySignature(CURRENT_SECRET, null, body, signPayload("other", body), NOW),
+    ).toBe(false);
   });
 });
 
