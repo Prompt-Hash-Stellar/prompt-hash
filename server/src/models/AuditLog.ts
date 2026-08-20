@@ -91,9 +91,10 @@ const auditLogSchema = new mongoose.Schema(
 
 // Hash chaining middleware for tamper-evident audit logs
 auditLogSchema.pre("save", async function () {
-  const latestDoc = await (this.constructor as any)
-    .findOne()
-    .sort({ createdAt: -1 });
+  try {
+    const latestDoc = await (this.constructor as any)
+      .findOne()
+      .sort({ createdAt: -1 });
 
   const prevHash = latestDoc ? latestDoc.hash || "" : "0".repeat(64);
   this.set("previousHash", prevHash);
@@ -114,7 +115,10 @@ auditLogSchema.pre("save", async function () {
     .update(fieldsToHash.join("|"))
     .digest("hex");
 
-  this.set("hash", currentHash);
+    this.set("hash", currentHash);
+  } catch (err: any) {
+    throw err;
+  }
 });
 
 // Compound indexes for common incident-review queries.
