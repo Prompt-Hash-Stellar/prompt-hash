@@ -43,7 +43,7 @@ export interface WorkerStats {
   budgetExceeded: string | null; // which budget limit was hit
 }
 
-const DEFAULT_BUDGET: WorkerBudget = {
+export const DEFAULT_BUDGET: WorkerBudget = {
   maxCandidates: 10000,
   maxMemoryBytes: 100 * 1024 * 1024, // 100 MB
   maxTimeMs: 60 * 1000, // 60 seconds

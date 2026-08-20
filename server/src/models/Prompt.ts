@@ -31,7 +31,7 @@ const promptSchema = new mongoose.Schema(
       type: [String],
       default: [],
       validate: {
-        validator: (v) => v.length <= 10,
+        validator: (v: string[]) => v.length <= 10,
         message: "A prompt may have at most 10 tags",
       },
     },

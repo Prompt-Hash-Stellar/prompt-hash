@@ -206,7 +206,7 @@ export async function scanForSimilarity(
   _content?: string, // ignored, fingerprint generated internally
 ): Promise<SimilarityResult> {
   // Import here to avoid circular dependency
-  const { enqueueSimilarityScan } = await import("./similarityJobQueue");
+  const { enqueueSimilarityScan } = await import("./similarityJobQueue.js");
 
   // Enqueue the scan (non-blocking)
   const jobId = await enqueueSimilarityScan(onChainId);

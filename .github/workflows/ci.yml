@@ -79,24 +79,25 @@ jobs:
   api:
     name: API (Express / server)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Enable Corepack
-        run: corepack enable
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "yarn"
+          cache: "npm"
+          cache-dependency-path: server/package-lock.json
 
       - name: Install dependencies
-        run: yarn install --immutable
+        run: npm ci
 
       - name: API / server tests
-        run: yarn test:api --if-present
+        run: npm test
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────────
   ci-gate:

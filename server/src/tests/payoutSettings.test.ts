@@ -12,7 +12,10 @@ const app = express();
 app.use(express.json());
 app.use("/api/user", userRouter);
 
-describe("Payout Settings", () => {
+// Requires a live MongoDB; skip in environments (like CI) without MONGODB_URI.
+const describeWithDb = process.env.MONGODB_URI ? describe : describe.skip;
+
+describeWithDb("Payout Settings", () => {
   let userWallet: string;
   let userKeypair: Keypair;
   

@@ -61,7 +61,8 @@
         "xbull": "Mobile and browser wallet for Stellar",
         "albedo": "Web-based Stellar wallet with built-in DEX",
         "lobstr": "Popular mobile and web wallet for Stellar",
-        "rabet": "Browser extension wallet for Stellar"
+        "rabet": "Browser extension wallet for Stellar",
+        "e2e-mock": "Deterministic local wallet for browser tests"
       }
     }
   }

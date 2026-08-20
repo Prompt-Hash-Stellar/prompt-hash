@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 import connectDb from "../db/connectDb";
 import WebhookSubscription from "../models/WebhookSubscription";
 import { ALLOWED_EVENTS } from "../services/webhookDispatcher";
-import { verifyChallengeSignature } from "../../src/lib/auth/challenge";
+import { verifyChallengeSignature } from "../utils/challengeSignature";
 
 const ADMIN_TOKEN = process.env.ADMIN_ROTATION_TOKEN || "";
 

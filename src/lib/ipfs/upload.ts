@@ -8,6 +8,19 @@
  */
 import { toIpfsUri } from "./reference";
 
+/**
+ * Whether off-chain IPFS upload is available.
+ *
+ * Uploads are proxied through the authenticated server endpoint
+ * `/api/ipfs/upload`, which keeps the Pinata credential (`PINATA_JWT`)
+ * server-side. There is no client-side secret to inspect, so the client
+ * treats off-chain storage as available and lets the server surface a
+ * configuration error at upload time when `PINATA_JWT` is missing.
+ */
+export function isIpfsUploadConfigured(): boolean {
+  return true;
+}
+
 export interface IpfsUploadResult {
   cid: string;
   uri: string;
