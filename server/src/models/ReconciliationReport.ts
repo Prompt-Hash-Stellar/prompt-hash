@@ -4,6 +4,7 @@ export type MismatchType =
   | "orphan_on_chain"
   | "missing_fulfillment"
   | "webhook_undelivered"
+  | "webhook_uncorrelated"
   | "amount_mismatch";
 
 export type RepairStatus = "pending" | "approved" | "completed" | "failed" | "skipped";
@@ -23,11 +24,20 @@ const mismatchItemSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ["orphan_on_chain", "missing_fulfillment", "webhook_undelivered", "amount_mismatch"],
+      enum: [
+        "orphan_on_chain",
+        "missing_fulfillment",
+        "webhook_undelivered",
+        "webhook_uncorrelated",
+        "amount_mismatch",
+      ],
       required: true,
     },
-    promptId: { type: String, required: true },
-    buyerWallet: { type: String, required: true, lowercase: true },
+    // promptId/buyerWallet are "unknown" (rather than required) for
+    // webhook_uncorrelated mismatches, where a failed delivery could not be
+    // matched to any purchase - see reconciliationService.ts.
+    promptId: { type: String, required: true, default: "unknown" },
+    buyerWallet: { type: String, required: true, lowercase: true, default: "unknown" },
     txHash: { type: String, default: "" },
     details: { type: mongoose.Schema.Types.Mixed },
     repairStatus: {

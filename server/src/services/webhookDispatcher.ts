@@ -75,12 +75,22 @@ async function deliverWithRetry(
 ): Promise<void> {
   let logEntry = await WebhookDeliveryLog.findOne({ deliveryId: payload.deliveryId });
   if (!logEntry) {
+    // Copy correlation evidence out of the payload so a failed delivery can
+    // later be matched back to the specific purchase it belongs to (see
+    // reconciliationService.ts). Different callers have historically used
+    // either `buyerWallet` or `buyer` as the key - accept both.
+    const promptId = payload.data?.promptId != null ? String(payload.data.promptId) : null;
+    const buyerWalletRaw = payload.data?.buyerWallet ?? payload.data?.buyer ?? null;
+    const buyerWallet = buyerWalletRaw != null ? String(buyerWalletRaw).toLowerCase() : null;
+
     logEntry = await WebhookDeliveryLog.create({
       deliveryId: payload.deliveryId,
       subscriptionId,
       event: payload.event,
       url,
       status: "retrying",
+      promptId,
+      buyerWallet,
     });
   }
 

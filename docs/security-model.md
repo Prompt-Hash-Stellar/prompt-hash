@@ -137,3 +137,42 @@ When adding a new external service:
 3. Run `vitest run src/test/security-headers.test.ts` to verify the test still passes
 4. Update this document's policy table
 5. Test the affected flow in browser devtools (Network and Console tabs)
+
+---
+
+## Standalone Express API Hardening (#169)
+
+The frontend CSP above governs the Vite/Vercel-served app. The standalone
+Express server (`server/src/server.ts`) is a separate deployment and has its
+own HTTP hardening, configured in `server/src/middleware/security.ts`:
+
+- **CORS**: Only origins listed in the `ALLOWED_ORIGINS` environment
+  variable (comma-separated) may make credentialed cross-origin requests.
+  Requests with no `Origin` header (server-to-server calls, curl, mobile
+  clients) are unaffected by CORS either way. There is no default-allow
+  fallback - an unset `ALLOWED_ORIGINS` means no browser origin is trusted.
+- **Defensive headers**: Helmet is applied globally (`X-Content-Type-Options`,
+  `X-Frame-Options`, HSTS, `X-Powered-By` removal, etc). Its CSP directive is
+  disabled here since this server serves JSON only, not HTML.
+- **Trusted proxy**: Set `TRUSTED_PROXY_HOPS` to the exact number of reverse
+  proxies/load balancers terminating traffic in front of the server process
+  (defaults to `1`, the common single-hop case). This is passed to Express's
+  `trust proxy` setting so `req.ip` - used by the rate limiters in
+  `middleware/rateLimiter.ts` - reflects the real client address instead of
+  an attacker-controlled `X-Forwarded-For` header. Deploying behind an extra
+  hop (e.g. a CDN in front of a load balancer) without updating this value
+  under-counts trusted hops and allows IP spoofing; over-counting it collapses
+  distinct clients onto the same rate-limit bucket.
+- **Request body limits**: `express.json()` is scoped per route class rather
+  than mounted once globally - a `100kb` default for most JSON APIs, and a
+  `2mb` budget for the routes that carry prompt content (`/api/prompts`,
+  `/api/versions`), which can legitimately be larger. Oversized bodies are
+  rejected with `413` before reaching any handler.
+
+Required deployment configuration (set for every environment - local,
+staging, production):
+
+| Variable | Purpose | Example |
+| --- | --- | --- |
+| `ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API | `https://app.example.com,https://staging.example.com` |
+| `TRUSTED_PROXY_HOPS` | Number of trusted reverse-proxy hops in front of the server | `1` |
