@@ -1,7 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createChallengeToken } from "../../src/lib/auth/challenge";
 import { withObservability } from "../../src/lib/observability/wrapper";
-import { checkRateLimit } from "../../src/lib/observability/rateLimiter";
+// 1. Updated Imports to use the new unified core
+import { checkRateLimit, getTrustedIp, buildRateLimitKey } from "../../src/lib/rateLimiter/core";
 import { metrics } from "../../src/lib/observability/metrics";
 import { recordAuditEvent } from "../../server/src/services/auditTrail";
 import { apiError, ErrorCode } from "../../src/lib/api/errorCodes";
@@ -30,7 +31,7 @@ export interface ChallengeResponse {
   nonce: string;
 }
 
-// Fail-fast module-load validation: reject startup if secrets are missing.
+// Fail-fast module-load validation
 (function validateEnv(): void {
   const secret = process.env.CHALLENGE_TOKEN_SECRET;
   if (!secret || isPlaceholder(secret) || secret.length < 16) {
@@ -57,28 +58,35 @@ async function handler(
   const validation = challengeSchema.safeParse(req.body);
 
   if (!validation.success) {
-  res.status(400).json(
-    apiError(
-      ErrorCode.MISSING_FIELDS,
-      "Invalid request payload.",
-    ),
-  );
-  return;
-}
+    res.status(400).json(
+      apiError(
+        ErrorCode.MISSING_FIELDS,
+        "Invalid request payload.",
+      ),
+    );
+    return;
+  }
 
   const { address, promptId } = validation.data;
-
-  const clientIp = String(
-    req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown",
-  );
-
   const isAuthenticated = Boolean(address);
 
-  const rateLimit = await checkRateLimit(
-    "challenge",
-    clientIp,
-    isAuthenticated,
+  // 2. Use secure IP extraction to prevent spoofing
+  const clientIp = getTrustedIp(
+    req.socket?.remoteAddress,
+    req.headers["x-forwarded-for"] as string
   );
+
+  // 3. Generate a multi-dimensional key (Route + IP + Wallet)
+  const bucketKey = buildRateLimitKey("challenge", clientIp, address);
+
+  // 4. Determine configuration based on auth state (maintaining your old rules)
+  const rateLimitConfig = isAuthenticated
+    ? { max: 10, windowMs: 60_000, fallbackPolicy: "strict-memory" as const }
+    : { max: 5, windowMs: 60_000, fallbackPolicy: "strict-memory" as const };
+
+  // 5. Execute unified check
+  const rateLimit = await checkRateLimit(bucketKey, rateLimitConfig);
+  const resetTimestamp = Math.ceil((Date.now() + rateLimit.reset) / 1000);
 
   if (!rateLimit.success) {
     req.logger.warn({ clientIp }, "Rate limit exceeded for challenge issuance");
@@ -96,15 +104,13 @@ async function handler(
 
     res.setHeader("X-RateLimit-Limit", rateLimit.limit);
     res.setHeader("X-RateLimit-Remaining", 0);
-    res.setHeader("X-RateLimit-Reset", rateLimit.reset);
+    res.setHeader("X-RateLimit-Reset", resetTimestamp);
 
     res.status(429).json(
       apiError(
         ErrorCode.RATE_LIMIT_IP,
         "Too many requests. Please try again later.",
-        {
-          reset: rateLimit.reset,
-        },
+        { reset: resetTimestamp },
       ),
     );
     return;
@@ -112,7 +118,7 @@ async function handler(
 
   res.setHeader("X-RateLimit-Limit", rateLimit.limit);
   res.setHeader("X-RateLimit-Remaining", rateLimit.remaining);
-  res.setHeader("X-RateLimit-Reset", rateLimit.reset);
+  res.setHeader("X-RateLimit-Reset", resetTimestamp);
 
   const secret = process.env.CHALLENGE_TOKEN_SECRET;
 
