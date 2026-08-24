@@ -1,6 +1,6 @@
 use super::types::{
-    DataKey, Error, Escrow, InstanceDataKey, ListingRevisionRecord, Prompt, Purchase,
-    PurchaseDispute, UpgradeProposal,
+    DataKey, Error, Escrow, FeePolicy, IndexMeta, IndexNode, IndexScope, InstanceDataKey,
+    ListingRevisionRecord, Prompt, PromptPage, Purchase, PurchaseDispute, UpgradeProposal,
 };
 use soroban_sdk::{token, Address, BytesN, Env, String, Vec};
 
@@ -189,6 +189,39 @@ impl InstanceStorage {
         env.storage().instance().set(&key, &next);
         Ok(id)
     }
+
+    /// The fee-policy version currently active for new listings (#82).
+    pub fn get_current_fee_policy_version(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&InstanceDataKey::CurrentFeePolicyVersion)
+            .unwrap_or(0)
+    }
+
+    pub fn set_current_fee_policy_version(env: &Env, version: u32) {
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::CurrentFeePolicyVersion, &version);
+    }
+
+    /// The pending fee-policy change awaiting its timelock, if any (#82).
+    pub fn get_pending_fee_policy(env: &Env) -> Option<FeePolicy> {
+        env.storage()
+            .instance()
+            .get(&InstanceDataKey::PendingFeePolicy)
+    }
+
+    pub fn set_pending_fee_policy(env: &Env, policy: &FeePolicy) {
+        env.storage()
+            .instance()
+            .set(&InstanceDataKey::PendingFeePolicy, policy);
+    }
+
+    pub fn clear_pending_fee_policy(env: &Env) {
+        env.storage()
+            .instance()
+            .remove(&InstanceDataKey::PendingFeePolicy);
+    }
 }
 
 /// Persistent storage for prompt, purchase, and user-index records.
@@ -203,6 +236,17 @@ impl Storage {
                 PERSISTENT_LIFETIME_THRESHOLD,
                 PERSISTENT_BUMP_AMOUNT,
             );
+        }
+    }
+
+    /// Extend TTL on all prompt-related persistent storage entries (#83).
+    /// Used after contract upgrade to re-bump existing state.
+    pub fn extend_all_ttl(env: &Env) {
+        let total = InstanceStorage::get_prompt_counter(env);
+        for id in 0..total {
+            let key = DataKey::Prompt(id);
+            Self::extend_key_ttl(env, &key);
+            Self::extend_key_ttl(env, &DataKey::PromptFeePolicyVersion(id));
         }
     }
 
@@ -383,7 +427,7 @@ impl Storage {
     /// Bounded, cursor-paginated walk of `scope`, oldest-first. `cursor` must
     /// be `None` (start from the beginning) or an id previously returned by
     /// this function; any other value (fabricated, or an id since removed
-    /// from this index) is rejected with `Error::InvalidCursor` rather than
+    /// from this index) is rejected with `Error::EscrowNotFound` rather than
     /// silently resyncing, so pagination never omits or duplicates entries
     /// across calls. Every call performs at most `2 * limit + 1` storage
     /// reads, independent of the index's total size.
@@ -397,7 +441,7 @@ impl Storage {
         let mut walk = match cursor {
             None => Self::get_index_meta(env, scope).head,
             Some(after) => {
-                let node = Self::get_index_node(env, scope, after).ok_or(Error::InvalidCursor)?;
+                let node = Self::get_index_node(env, scope, after).ok_or(Error::EscrowNotFound)?;
                 node.next
             }
         };

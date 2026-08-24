@@ -1,5 +1,9 @@
 use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN, Env, String, Vec};
 
+/// Time in seconds that must elapse between proposing a fee-policy
+/// change and activating it (#82).
+pub const FEE_POLICY_TIMELOCK_SECS: u64 = 7 * 24 * 60 * 60;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -87,6 +91,8 @@ pub enum InstanceDataKey {
     PreviousWasmHash,
     SchemaVersion,
     UpgradeProposalCounter,
+    PendingFeePolicy,
+    CurrentFeePolicyVersion,
 }
 
 /// Persistent storage keys — per-prompt and per-user data stored in
@@ -107,6 +113,14 @@ pub enum DataKey {
     Reviewers,
     UpgradeSigners,
     UpgradeProposal(u32),
+    /// Doubly-linked-list node for discovery indexes (#83).
+    IndexNode(IndexScope, u64),
+    /// Head/tail/count metadata for a discovery index (#83).
+    IndexMeta(IndexScope),
+    /// The fee-policy version pinned to a specific listing (#82).
+    PromptFeePolicyVersion(u64),
+    /// Historical fee-policy snapshot keyed by version (#82).
+    FeePolicyHistory(u32),
 }
 
 #[contracttype]
@@ -259,6 +273,43 @@ pub struct PurchasePreview {
     /// Parallel to the listing's `splits`, in the same order.
     pub split_amounts: Vec<i128>,
     pub creator_amount: i128,
+}
+
+/// Scope of a discovery index (#83). Each variant defines a different
+/// way to browse/list prompts.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IndexScope {
+    Active,
+    Creator(Address),
+    Buyer(Address),
+    Category(String),
+    Tag(String),
+}
+
+/// A single node in a doubly-linked discovery index (#83).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexNode {
+    pub prev: Option<u64>,
+    pub next: Option<u64>,
+}
+
+/// Head/tail/count bookkeeping for a discovery index (#83).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexMeta {
+    pub head: Option<u64>,
+    pub tail: Option<u64>,
+    pub count: u32,
+}
+
+/// A page of prompts returned by cursor-paginated index queries (#83).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PromptPage {
+    pub prompts: Vec<Prompt>,
+    pub next_cursor: Option<u64>,
 }
 
 /// A single revenue-split entry stored inside a prompt.
