@@ -558,3 +558,4 @@ pub struct DisputeAppealed {
     pub prompt_id: u64,
     pub buyer: Address,
 }
+

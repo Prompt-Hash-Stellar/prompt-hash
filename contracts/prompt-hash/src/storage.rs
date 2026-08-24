@@ -520,12 +520,7 @@ impl Storage {
 
     /// Moves a listing between Category buckets when `revise_listing`
     /// changes its category, preventing stale entries under the old value.
-    pub fn reindex_category(
-        env: &Env,
-        prompt_id: u64,
-        old_category: &String,
-        new_category: &String,
-    ) {
+    pub fn reindex_category(env: &Env, prompt_id: u64, old_category: &String, new_category: &String) {
         if old_category != new_category {
             Self::index_remove(env, &IndexScope::Category(old_category.clone()), prompt_id);
             Self::index_insert(env, &IndexScope::Category(new_category.clone()), prompt_id);
@@ -834,4 +829,5 @@ impl Storage {
         }
         record
     }
+
 }
