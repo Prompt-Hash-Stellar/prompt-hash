@@ -208,18 +208,18 @@ export function isPrivateOrReservedIp(ip: string): boolean {
 
 export type DnsLookupFn = (
   hostname: string,
-  options?: any
+  options?: { all: true }
 ) => Promise<Array<{ address: string; family: number }>>;
 
-let activeDnsLookup: DnsLookupFn = async (hostname, options) => {
-  return dns.lookup(hostname, options);
+let activeDnsLookup: DnsLookupFn = async (hostname) => {
+  return dns.lookup(hostname, { all: true });
 };
 
 export function setDnsLookup(lookupFn: DnsLookupFn | null): void {
   if (lookupFn) {
     activeDnsLookup = lookupFn;
   } else {
-    activeDnsLookup = async (hostname, options) => dns.lookup(hostname, options);
+    activeDnsLookup = async (hostname) => dns.lookup(hostname, { all: true });
   }
 }
 

@@ -55,7 +55,7 @@ const E2E_WALLET: WalletOption = {
   id: "e2e-mock",
   name: "E2E Mock Wallet",
   icon: "🧪",
-  description: "Deterministic local wallet for browser tests",
+  descriptionKey: "wallet.modal.wallets.e2e-mock",
 };
 
 interface WalletModalProps {

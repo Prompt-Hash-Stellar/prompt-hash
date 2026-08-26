@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { createContentCommitment, normalizePrompt } from "../../server/src/services/fingerprint";
+import {
+  createContentCommitment,
+  createSimhashFingerprint,
+  normalizePrompt,
+} from "../../server/src/services/fingerprint";
 
 describe("privacy: public data cannot reconstruct plaintext", () => {
   it("content commitment is a one-way hash, not reversible", () => {
@@ -17,7 +21,6 @@ describe("privacy: public data cannot reconstruct plaintext", () => {
   });
 
   it("simhash fingerprint is a fixed-size bit vector, not the original text", () => {
-    const { createSimhashFingerprint } = require("../../server/src/services/fingerprint");
     const fp = createSimhashFingerprint("Confidential prompt text");
     const fpStr = fp.toString(16);
     expect(fpStr.length).toBeLessThanOrEqual(16);
@@ -44,7 +47,6 @@ describe("log leakage: commitments in logs should not reveal content", () => {
   });
 
   it("simhash hex logged at info level contains no prompt text", () => {
-    const { createSimhashFingerprint } = require("../../server/src/services/fingerprint");
     const fp = createSimhashFingerprint("Write a SQL injection payload");
     const logLine = `[simhash] fingerprint=${fp.toString(16)}`;
     expect(logLine).not.toContain("SQL");

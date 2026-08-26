@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import { RegisterWebhook, GetWebhook, DeleteWebhook } from "./webhookControllers";
 
 const mockReq = (opts: any) => {
@@ -11,24 +10,24 @@ const mockReq = (opts: any) => {
 
 const mockRes = () => {
   const res: any = {};
-  res.status = vi.fn().mockImplementation((code: number) => {
+  res.status = jest.fn().mockImplementation((code: number) => {
     res._status = code;
     return res;
   });
-  res.json = vi.fn().mockImplementation((payload: any) => {
+  res.json = jest.fn().mockImplementation((payload: any) => {
     res._json = payload;
     return res;
   });
   return res;
 };
 
-vi.mock("../../src/lib/auth/challenge", async () => {
-  return {
-    verifyChallengeSignature: vi.fn(() => true),
-  };
-});
+jest.mock("../utils/challengeSignature", () => ({
+  verifyChallengeSignature: jest.fn(() => true),
+}));
 
-vi.mock("../models/WebhookSubscription", async () => {
+jest.mock("../db/connectDb", () => ({ __esModule: true, default: jest.fn() }));
+
+jest.mock("../models/WebhookSubscription", () => {
   class MockSub {
     url: string;
     events: any;
@@ -41,16 +40,16 @@ vi.mock("../models/WebhookSubscription", async () => {
       this.events = data.events;
       this.walletAddress = data.walletAddress;
     }
-    save = vi.fn().mockResolvedValue(undefined);
-    static findOne = vi.fn().mockResolvedValue(null);
-    static deleteOne = vi.fn().mockResolvedValue(undefined);
+    save = jest.fn().mockResolvedValue(undefined);
+    static findOne = jest.fn().mockResolvedValue(null);
+    static deleteOne = jest.fn().mockResolvedValue(undefined);
   }
-  return MockSub;
+  return { __esModule: true, default: MockSub };
 });
 
 describe("webhook controllers auth", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
   });
 
   it("rejects RegisterWebhook without signed owner", async () => {
@@ -64,7 +63,7 @@ describe("webhook controllers auth", () => {
     const req = mockReq({ body: { url: "https://example.com/hook", walletAddress: "GABC", signedMessage: "sig", timestamp: Date.now() } });
     const res = mockRes();
     await RegisterWebhook(req, res as any);
-    expect([200,201]).toContain(res._status);
+    expect([200, 201]).toContain(res._status);
   });
 
   it("rejects GetWebhook without signed owner", async () => {

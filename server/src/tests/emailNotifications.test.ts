@@ -70,7 +70,7 @@ function createMockJobDoc(data: any): MockJobDoc {
   return doc;
 }
 
-jest.mock("../models/User.js", () => ({
+jest.mock("../models/User", () => ({
   __esModule: true,
   default: {
     findOne: jest.fn().mockImplementation((query: { walletAddress?: string }) => {
