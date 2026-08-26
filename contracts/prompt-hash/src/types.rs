@@ -50,6 +50,22 @@ pub enum Error {
     DisputeExpired = 44,
     AppealWindowExpired = 45,
     ReviewerThresholdNotMet = 46,
+    /// Upgrade-signer set or threshold is misconfigured (duplicate/unknown
+    /// signer, too many signers, or a threshold unreachable given the
+    /// current signer count) (#84). Signer-membership auth failures use
+    /// `Unauthorized` instead — this is a *configuration* error.
+    UpgradeSignerConfigInvalid = 47,
+    /// An upgrade proposal cannot accept the requested action right now:
+    /// not found, already executed/cancelled, already approved by this
+    /// signer, outside its public-timelock execution window, or short of
+    /// quorum (#84).
+    UpgradeProposalUnavailable = 48,
+    /// A binding recorded on the proposal no longer matches reality:
+    /// wrong contract/network, a stale current-wasm-hash/epoch (another
+    /// upgrade already executed), a forged migration hash, an
+    /// incompatible schema transition, or an invalid rollback target or
+    /// timelock window (#84).
+    UpgradeBindingMismatch = 49,
 }
 
 /// Instance storage keys — contract-level configuration stored in
@@ -65,6 +81,12 @@ pub enum InstanceDataKey {
     ReferralPercentage,
     IsPaused,
     ReviewerThreshold,
+    UpgradeThreshold,
+    UpgradeEpoch,
+    CurrentWasmHash,
+    PreviousWasmHash,
+    SchemaVersion,
+    UpgradeProposalCounter,
 }
 
 /// Persistent storage keys — per-prompt and per-user data stored in
@@ -73,7 +95,9 @@ pub enum InstanceDataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Prompt(u64),
-    CreatorPrompts(Address),
+    /// Legacy unbounded buyer index (#83). No longer written; retained only
+    /// as the read source for `migrate_buyer_index_page`, which drains and
+    /// then deletes each buyer's entry.
     BuyerPrompts(Address),
     Purchase(u64, Address),
     VoucherKey(u64, BytesN<32>),
@@ -81,6 +105,8 @@ pub enum DataKey {
     PurchaseDispute(u64, Address),
     Escrow(u64, Address),
     Reviewers,
+    UpgradeSigners,
+    UpgradeProposal(u32),
 }
 
 #[contracttype]
@@ -163,11 +189,76 @@ pub struct Escrow {
     pub dispute_resolved_at: u64,
 }
 
+/// A timelocked, multi-party upgrade proposal (#84). Binds the exact code,
+/// network, contract, upgrade epoch, schema/migration identity, and the
+/// public execution window so a proposal can only ever be executed exactly
+/// as reviewed and approved.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposal {
+    pub id: u32,
+    pub proposer: Address,
+    pub target_wasm_hash: BytesN<32>,
+    /// The contract's `CurrentWasmHash` at proposal time. `None` before the
+    /// first governed upgrade ever executes. Re-checked at execution so a
+    /// proposal becomes invalid the moment a different upgrade lands first.
+    pub expected_current_wasm_hash: Option<BytesN<32>>,
+    pub contract_id: Address,
+    pub network_id: BytesN<32>,
+    /// The contract's `UpgradeEpoch` at proposal time; incremented on every
+    /// executed upgrade, giving a second, explicit replay/staleness guard.
+    pub epoch: u32,
+    pub schema_version: u32,
+    /// `sha256(target_wasm_hash || schema_version || network_id)`, checked
+    /// against the contract's own recomputation so it can't be substituted.
+    pub migration_hash: BytesN<32>,
+    /// `true` if this proposal restores `PreviousWasmHash` rather than
+    /// advancing to a new schema version.
+    pub is_rollback: bool,
+    /// Public timelock: earliest Unix timestamp at which execution is allowed.
+    pub earliest_execution_time: u64,
+    /// Unix timestamp after which the proposal can no longer be executed.
+    pub expiry_time: u64,
+    pub created_at: u64,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+    pub cancelled: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PricingConfig {
     pub price: i128,
     pub asset: Address,
+}
+
+/// A versioned snapshot of the platform's fee/referral rates (#82).
+/// Listings pin to a specific version at creation (and re-pin on
+/// `update_splits`) so that a later admin fee change can never retroactively
+/// alter — or brick — an already-listed prompt's economics.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeePolicy {
+    pub version: u32,
+    pub fee_bps: u32,
+    pub referral_bps: u32,
+    /// Ledger timestamp the policy became active (0 for the synthesized
+    /// pre-governance baseline, version 0).
+    pub effective_at: u64,
+}
+
+/// Result of `preview_purchase` — computed with the exact same allocation
+/// function `buy_prompt` uses, against the listing's pinned fee policy, so
+/// preview and execution can never diverge (#82).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PurchasePreview {
+    pub policy_version: u32,
+    pub fee_amount: i128,
+    pub referral_amount: i128,
+    /// Parallel to the listing's `splits`, in the same order.
+    pub split_amounts: Vec<i128>,
+    pub creator_amount: i128,
 }
 
 /// A single revenue-split entry stored inside a prompt.
@@ -367,9 +458,28 @@ pub trait PromptHashTrait {
 
     fn has_access(env: Env, user: Address, prompt_id: u64) -> Result<bool, Error>;
     fn get_prompt(env: Env, prompt_id: u64) -> Result<Prompt, Error>;
-    fn get_all_prompts(env: Env) -> Result<Vec<Prompt>, Error>;
-    fn get_prompts_by_category(env: Env, category: String) -> Result<Vec<Prompt>, Error>;
-    fn get_prompts_by_tag(env: Env, tag: String) -> Result<Vec<Prompt>, Error>;
+
+    /// Cursor-paginated listing of currently-active prompts. `cursor` is the
+    /// last id returned by a previous call (or `None` to start from the
+    /// oldest listing); `limit` is clamped to `MAX_PAGE_SIZE`. Every call
+    /// does bounded work independent of total market size (#83).
+    fn get_active_prompts_page(
+        env: Env,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
+    fn get_prompts_by_category_page(
+        env: Env,
+        category: String,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
+    fn get_prompts_by_tag_page(
+        env: Env,
+        tag: String,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
     fn open_dispute(
         env: Env,
         buyer: Address,
@@ -384,8 +494,18 @@ pub trait PromptHashTrait {
         refund: bool,
     ) -> Result<(), Error>;
     fn get_dispute(env: Env, prompt_id: u64, buyer: Address) -> Result<PurchaseDispute, Error>;
-    fn get_prompts_by_creator(env: Env, creator: Address) -> Result<Vec<Prompt>, Error>;
-    fn get_prompts_by_buyer(env: Env, buyer: Address) -> Result<Vec<Prompt>, Error>;
+    fn get_prompts_by_creator_page(
+        env: Env,
+        creator: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
+    fn get_prompts_by_buyer_page(
+        env: Env,
+        buyer: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<PromptPage, Error>;
     fn set_fee_percentage(env: Env, new_fee_percentage: u32) -> Result<(), Error>;
     fn set_fee_wallet(env: Env, new_fee_wallet: Address) -> Result<(), Error>;
     fn get_fee_percentage(env: Env) -> u32;
@@ -395,6 +515,32 @@ pub trait PromptHashTrait {
     // New platform fee governance API
     fn update_platform_fee(env: Env, admin: Address, new_fee: u32) -> Result<(), Error>;
     fn get_platform_fee(env: Env) -> u32;
+
+    /// Activate a previously proposed fee-policy change once its timelock has
+    /// elapsed (#82). Permissionless: anyone may call it, but it only takes
+    /// effect once `env.ledger().timestamp() >= pending.effective_at`.
+    /// Returns the newly activated policy version.
+    fn activate_pending_fee_policy(env: Env) -> Result<u32, Error>;
+    /// The fee-policy change currently awaiting its timelock, if any.
+    fn get_pending_fee_policy(env: Env) -> Option<FeePolicy>;
+    /// Look up a historical (or the synthesized baseline) fee policy by
+    /// version number.
+    fn get_fee_policy(env: Env, version: u32) -> FeePolicy;
+    /// The fee-policy version currently active for new listings.
+    fn get_current_fee_policy_version(env: Env) -> u32;
+    /// The fee-policy version a specific listing is pinned to.
+    fn get_prompt_fee_policy_version(env: Env, prompt_id: u64) -> Result<u32, Error>;
+
+    /// Compute the exact fee/referral/split/creator breakdown for a
+    /// hypothetical purchase, using the listing's pinned fee policy — the
+    /// same allocation function `buy_prompt` executes, so preview and
+    /// execution can never diverge (#82).
+    fn preview_purchase(
+        env: Env,
+        prompt_id: u64,
+        payment_amount_stroops: i128,
+        has_referrer: bool,
+    ) -> Result<PurchasePreview, Error>;
     fn set_pause_status(env: Env, paused: bool) -> Result<(), Error>;
     fn is_paused(env: Env) -> bool;
     fn add_voucher(
@@ -416,11 +562,73 @@ pub trait PromptHashTrait {
     /// that exist — missing IDs are silently skipped.
     fn get_prompts_by_ids(env: Env, prompt_ids: Vec<u64>) -> Result<Vec<Prompt>, Error>;
 
-    fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error>;
+    // Timelocked multi-party upgrade governance (#84)
+    fn add_upgrade_signer(env: Env, signer: Address) -> Result<(), Error>;
+    fn remove_upgrade_signer(env: Env, signer: Address) -> Result<(), Error>;
+    fn set_upgrade_threshold(env: Env, threshold: u32) -> Result<(), Error>;
+    fn get_upgrade_signers(env: Env) -> Vec<Address>;
+    fn get_upgrade_threshold(env: Env) -> u32;
+    fn get_upgrade_epoch(env: Env) -> u32;
+    fn get_current_wasm_hash(env: Env) -> Option<BytesN<32>>;
+    fn get_previous_wasm_hash(env: Env) -> Option<BytesN<32>>;
+    fn get_schema_version(env: Env) -> u32;
+    fn compute_migration_hash(
+        env: Env,
+        target_wasm_hash: BytesN<32>,
+        schema_version: u32,
+    ) -> BytesN<32>;
+    /// Read-only structural invariant check ("simulate migration"). Callable
+    /// standalone (e.g. via RPC simulation before proposing) and re-run as
+    /// the final gate inside `execute_upgrade` before any mutation.
+    fn verify_upgrade_invariants(env: Env) -> Result<(), Error>;
+    #[allow(clippy::too_many_arguments)]
+    fn propose_upgrade(
+        env: Env,
+        proposer: Address,
+        target_wasm_hash: BytesN<32>,
+        schema_version: u32,
+        migration_hash: BytesN<32>,
+        earliest_execution_time: u64,
+        expiry_time: u64,
+        is_rollback: bool,
+    ) -> Result<u32, Error>;
+    fn approve_upgrade(env: Env, signer: Address, proposal_id: u32) -> Result<(), Error>;
+    fn cancel_upgrade(env: Env, caller: Address, proposal_id: u32) -> Result<(), Error>;
+    fn execute_upgrade(env: Env, caller: Address, proposal_id: u32) -> Result<(), Error>;
+    fn get_upgrade_proposal(env: Env, proposal_id: u32) -> Result<UpgradeProposal, Error>;
+
     fn extend_ttl(env: Env, key: DataKey) -> Result<(), Error>;
-    /// Bulk-extend TTL for all active storage entries. Intended for periodic
-    /// admin maintenance (#26).
-    fn extend_all_ttl(env: Env) -> Result<(), Error>;
+    /// Extend TTL for a bounded batch of prompts (and their listing
+    /// revisions and discovery-index nodes), starting at `cursor` (or the
+    /// beginning if `None`). Returns the cursor to resume from, or `None`
+    /// once every prompt has been covered. Replaces the old unbounded
+    /// `extend_all_ttl`, which iterated the entire market in one call and
+    /// risked exceeding the CPU budget on `upgrade` as the market grew (#83).
+    fn extend_ttl_page(env: Env, cursor: Option<u64>, limit: u32) -> Result<Option<u64>, Error>;
+
+    /// Resumable, idempotent reindex of a bounded batch of prompts
+    /// (starting at `cursor`, or the beginning if `None`) into the Active,
+    /// Creator, Category, and Tag discovery indexes from their canonical
+    /// `Prompt` fields. Safe to call repeatedly, including after an
+    /// interruption — already-indexed entries are no-ops. Returns the
+    /// cursor to resume from, or `None` once complete (#83).
+    fn migrate_prompt_indexes_page(
+        env: Env,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> Result<Option<u64>, Error>;
+
+    /// Resumable, idempotent migration of one buyer's legacy `BuyerPrompts`
+    /// list into the new Buyer discovery index, processing up to `limit`
+    /// entries starting at `cursor` (or the beginning if `None`). Deletes
+    /// the legacy entry once fully drained. Returns the cursor to resume
+    /// from, or `None` once complete (#83).
+    fn migrate_buyer_index_page(
+        env: Env,
+        buyer: Address,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Result<Option<u32>, Error>;
 
     // Dispute and Escrow resolution methods
     fn submit_evidence(

@@ -40,6 +40,40 @@ export async function runReconciliation(options: RunReconciliationOptions = {}) 
     repairStatus: "pending" | "approved" | "completed" | "failed" | "skipped";
   }> = [];
 
+  // Computed once, outside the purchase loop: previously this filter (and
+  // the mismatch it produces) ran *inside* the loop and was appended using
+  // the *current* purchase's promptId/buyerWallet regardless of whether
+  // that delivery had anything to do with that purchase - turning every
+  // failed delivery into a mismatch against every purchase (an N x M
+  // cross-join) instead of correlating each delivery to the one purchase
+  // it actually belongs to.
+  const failedWebhooks = webhookLogs.filter(
+    (w) => w.event === "PromptPurchased" && w.status === "failed"
+  );
+
+  // Index failed deliveries by the correlation key persisted at dispatch
+  // time (promptId + buyerWallet - see webhookDispatcher.ts), so each
+  // purchase only picks up the deliveries that were actually dispatched
+  // for it. Deliveries missing that evidence (e.g. logged before this
+  // correlation data existed) can't be indexed here and are reported
+  // separately below as "webhook_uncorrelated" rather than being silently
+  // dropped or attributed to the wrong purchase.
+  const failedWebhooksByPurchase = new Map<string, typeof failedWebhooks>();
+  const uncorrelatedWebhooks: typeof failedWebhooks = [];
+  for (const w of failedWebhooks) {
+    if (!w.promptId || !w.buyerWallet) {
+      uncorrelatedWebhooks.push(w);
+      continue;
+    }
+    const key = `${w.promptId}:${w.buyerWallet.toLowerCase()}`;
+    const bucket = failedWebhooksByPurchase.get(key);
+    if (bucket) {
+      bucket.push(w);
+    } else {
+      failedWebhooksByPurchase.set(key, [w]);
+    }
+  }
+
   for (const p of purchases) {
     const key = `${p.promptId}:${p.buyerWallet.toLowerCase()}`;
     const f = fulfillmentMap.get(key);
@@ -64,10 +98,8 @@ export async function runReconciliation(options: RunReconciliationOptions = {}) 
       });
     }
 
-    const failedWebhooks = webhookLogs.filter(
-      (w) => w.event === "PromptPurchased" && w.status === "failed"
-    );
-    for (const w of failedWebhooks) {
+    const correlatedWebhooks = failedWebhooksByPurchase.get(key) ?? [];
+    for (const w of correlatedWebhooks) {
       mismatches.push({
         type: "webhook_undelivered",
         promptId: p.promptId,
@@ -75,6 +107,45 @@ export async function runReconciliation(options: RunReconciliationOptions = {}) 
         txHash: p.txHash,
         details: { deliveryId: w.deliveryId, url: w.url, lastError: w.lastError },
         repairStatus: "pending",
+      });
+    }
+  }
+
+  // Failed deliveries that either lacked correlation evidence, or whose
+  // promptId/buyerWallet didn't match any known purchase, are reported
+  // explicitly rather than being attributed to an unrelated purchase.
+  const knownPurchaseKeys = new Set(
+    purchases.map((p) => `${p.promptId}:${p.buyerWallet.toLowerCase()}`)
+  );
+  for (const w of failedWebhooks) {
+    if (!w.promptId || !w.buyerWallet) {
+      mismatches.push({
+        type: "webhook_uncorrelated",
+        promptId: "unknown",
+        buyerWallet: "unknown",
+        details: {
+          deliveryId: w.deliveryId,
+          url: w.url,
+          lastError: w.lastError,
+          reason: "Delivery log has no promptId/buyerWallet correlation evidence.",
+        },
+        repairStatus: "skipped",
+      });
+      continue;
+    }
+    const key = `${w.promptId}:${w.buyerWallet.toLowerCase()}`;
+    if (!knownPurchaseKeys.has(key)) {
+      mismatches.push({
+        type: "webhook_uncorrelated",
+        promptId: w.promptId,
+        buyerWallet: w.buyerWallet,
+        details: {
+          deliveryId: w.deliveryId,
+          url: w.url,
+          lastError: w.lastError,
+          reason: "No purchase record matches this delivery's promptId/buyerWallet.",
+        },
+        repairStatus: "skipped",
       });
     }
   }

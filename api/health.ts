@@ -12,6 +12,17 @@ async function handler(_req: any, res: any) {
     uptime: process.uptime(),
     indexer: {
       lastProcessedLedger: state?.lastIndexedLedger || 0,
+      sourceCheckpoint: state?.sourceCheckpoint || state?.lastIndexedLedger || 0,
+      rawEventCheckpoint: state?.rawEventCheckpoint || state?.lastIndexedLedger || 0,
+      projectionCheckpoint: state?.projectionCheckpoint || 0,
+      quarantinedFailures: state?.quarantinedFailures || 0,
+      lease: state?.leaseOwner
+        ? {
+            ownerId: state.leaseOwner,
+            fencingToken: state.leaseFencingToken || 0,
+            expiresAt: state.leaseExpiresAt,
+          }
+        : null,
     },
   };
 

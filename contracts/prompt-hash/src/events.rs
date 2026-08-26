@@ -91,6 +91,26 @@ struct PlatformFeeUpdated {
     pub admin: Address,
 }
 
+/// Emitted when an admin stages a fee/referral change behind the
+/// governance timelock (#82).
+#[contractevent]
+struct FeePolicyProposed {
+    #[topic]
+    pub version: u32,
+    pub fee_bps: u32,
+    pub referral_bps: u32,
+    pub effective_at: u64,
+}
+
+/// Emitted once a pending fee policy is activated after its timelock (#82).
+#[contractevent]
+struct FeePolicyActivated {
+    #[topic]
+    pub version: u32,
+    pub fee_bps: u32,
+    pub referral_bps: u32,
+}
+
 #[contractevent]
 struct ListingExtended {
     #[topic]
@@ -111,6 +131,62 @@ struct ListingRevised {
 struct SplitsUpdated {
     #[topic]
     pub prompt_id: u64,
+}
+
+#[contractevent]
+struct UpgradeSignerAdded {
+    #[topic]
+    pub signer: Address,
+}
+
+#[contractevent]
+struct UpgradeSignerRemoved {
+    #[topic]
+    pub signer: Address,
+}
+
+#[contractevent]
+struct UpgradeThresholdUpdated {
+    pub new_threshold: u32,
+}
+
+/// Emitted when a timelocked upgrade proposal is created (#84). Indexers can
+/// reconstruct the full binding set from this event alone.
+#[contractevent]
+struct UpgradeProposed {
+    #[topic]
+    pub proposal_id: u32,
+    pub proposer: Address,
+    pub target_wasm_hash: soroban_sdk::BytesN<32>,
+    pub schema_version: u32,
+    pub migration_hash: soroban_sdk::BytesN<32>,
+    pub earliest_execution_time: u64,
+    pub expiry_time: u64,
+    pub is_rollback: bool,
+}
+
+#[contractevent]
+struct UpgradeApproved {
+    #[topic]
+    pub proposal_id: u32,
+    pub signer: Address,
+    pub approvals_count: u32,
+}
+
+#[contractevent]
+struct UpgradeCancelled {
+    #[topic]
+    pub proposal_id: u32,
+    pub caller: Address,
+}
+
+#[contractevent]
+struct UpgradeExecuted {
+    #[topic]
+    pub proposal_id: u32,
+    pub target_wasm_hash: soroban_sdk::BytesN<32>,
+    pub schema_version: u32,
+    pub epoch: u32,
 }
 
 #[contractevent]
@@ -249,6 +325,31 @@ impl Events {
         .publish(env);
     }
 
+    pub fn emit_fee_policy_proposed(
+        env: &Env,
+        version: u32,
+        fee_bps: u32,
+        referral_bps: u32,
+        effective_at: u64,
+    ) {
+        FeePolicyProposed {
+            version,
+            fee_bps,
+            referral_bps,
+            effective_at,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_fee_policy_activated(env: &Env, version: u32, fee_bps: u32, referral_bps: u32) {
+        FeePolicyActivated {
+            version,
+            fee_bps,
+            referral_bps,
+        }
+        .publish(env);
+    }
+
     pub fn emit_listing_extended(env: &Env, prompt_id: u64, new_expires_at: u64) {
         ListingExtended {
             prompt_id,
@@ -267,6 +368,81 @@ impl Events {
 
     pub fn emit_splits_updated(env: &Env, prompt_id: u64) {
         SplitsUpdated { prompt_id }.publish(env);
+    }
+
+    pub fn emit_upgrade_signer_added(env: &Env, signer: Address) {
+        UpgradeSignerAdded { signer }.publish(env);
+    }
+
+    pub fn emit_upgrade_signer_removed(env: &Env, signer: Address) {
+        UpgradeSignerRemoved { signer }.publish(env);
+    }
+
+    pub fn emit_upgrade_threshold_updated(env: &Env, new_threshold: u32) {
+        UpgradeThresholdUpdated { new_threshold }.publish(env);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_upgrade_proposed(
+        env: &Env,
+        proposal_id: u32,
+        proposer: Address,
+        target_wasm_hash: soroban_sdk::BytesN<32>,
+        schema_version: u32,
+        migration_hash: soroban_sdk::BytesN<32>,
+        earliest_execution_time: u64,
+        expiry_time: u64,
+        is_rollback: bool,
+    ) {
+        UpgradeProposed {
+            proposal_id,
+            proposer,
+            target_wasm_hash,
+            schema_version,
+            migration_hash,
+            earliest_execution_time,
+            expiry_time,
+            is_rollback,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_upgrade_approved(
+        env: &Env,
+        proposal_id: u32,
+        signer: Address,
+        approvals_count: u32,
+    ) {
+        UpgradeApproved {
+            proposal_id,
+            signer,
+            approvals_count,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_upgrade_cancelled(env: &Env, proposal_id: u32, caller: Address) {
+        UpgradeCancelled {
+            proposal_id,
+            caller,
+        }
+        .publish(env);
+    }
+
+    pub fn emit_upgrade_executed(
+        env: &Env,
+        proposal_id: u32,
+        target_wasm_hash: soroban_sdk::BytesN<32>,
+        schema_version: u32,
+        epoch: u32,
+    ) {
+        UpgradeExecuted {
+            proposal_id,
+            target_wasm_hash,
+            schema_version,
+            epoch,
+        }
+        .publish(env);
     }
 
     pub fn emit_dispute_opened(env: &Env, prompt_id: u64, buyer: Address) {

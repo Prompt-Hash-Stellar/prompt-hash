@@ -5,5 +5,7 @@
  * Covers: fetching prompts, buying prompts, and verifying license ownership.
  */
 
-export { PromptHashClient } from "./client.js";
-export type { PromptInfo, PurchaseResult, ClientConfig } from "./types.js";
+export * from "./types.js";
+export * from "./errors.js";
+export * from "./client.js";
+export * from "./contract.js";

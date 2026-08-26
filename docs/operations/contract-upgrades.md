@@ -45,10 +45,11 @@ Execute the upgrade script from the repository root:
 2. **Optimizes the Wasm:** Runs `stellar contract optimize` to reduce the Wasm size.
 3. **Installs the Wasm (Compute Hash):** Uploads the optimized Wasm code to the Stellar network using `stellar contract install`. This returns a `WASM_HASH`. It does not execute or instantiate the contract.
 4. **Applies the Upgrade:** Invokes the `upgrade` method on the currently running contract, passing in the new `WASM_HASH`. The contract logic (specifically the `env.deployer().update_current_contract_wasm(new_wasm_hash)` call) safely replaces the contract's executing code while retaining all storage.
-5. **Verifies:** Calls a read-only endpoint (`get_all_prompts`) to ensure the contract is still responsive and healthy.
+5. **Verifies:** Calls a read-only endpoint (`get_active_prompts_page`) to ensure the contract is still responsive and healthy.
 
 ## Safety Considerations
 
 - **Always test upgrades on `testnet`** before executing them on production.
 - If you're altering data structures (e.g. adding fields to `Prompt`), ensure you test the migration path thoroughly. Soroban strictly enforces data types; reading an old `Prompt` struct as a new `Prompt` struct with different fields will panic if not explicitly handled via enum versioning or backward-compatible storage keys.
 - Monitor fee configurations post-upgrade to ensure no regression occurs.
+- `upgrade` no longer bulk-extends TTL for every prompt in one call (#83) — that unbounded pass was itself at risk of exceeding the CPU budget as the market grows, which would have made upgrades impossible. After an upgrade, run `extend_ttl_page(cursor, limit)` repeatedly (advancing `cursor` with each call's return value until it comes back `None`) as a separate bounded maintenance step.

@@ -40,7 +40,14 @@ export default async function handler(req: any, res: any) {
       reason.trim(),
     );
 
-    console.log(`✓ Review ${reviewId} reported by ${reporterAddress.slice(0, 8)}... Reason: ${reason}`);
+    // Log a safe, structured summary only - never the free-form reason text,
+    // which may contain PII, abuse descriptions, or other sensitive content.
+    console.log("Review reported for moderation", {
+      reviewId,
+      promptId,
+      reporterAddress: reporterAddress.slice(0, 8) + "...",
+      reasonLength: reason.trim().length,
+    });
 
     res.status(200).json({
       success: true,
