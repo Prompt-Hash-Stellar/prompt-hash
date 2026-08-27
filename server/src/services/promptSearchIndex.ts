@@ -1,8 +1,9 @@
 import { Types } from "mongoose";
 import { PromptSearchIndex } from "../models/PromptSearchIndex";
+import { cacheGetOrLoad, cacheDelPattern, CACHE_KEYS } from "./cacheService";
 
 export async function indexPromptProjection(prompt: any, creator: string, sourceLedger: number) {
-  return PromptSearchIndex.updateOne(
+  const result = await PromptSearchIndex.updateOne(
     { promptId: String(prompt.onChainId) },
     { $set: {
       promptId: String(prompt.onChainId), title: prompt.title || "Untitled prompt",
@@ -13,6 +14,8 @@ export async function indexPromptProjection(prompt: any, creator: string, source
     } },
     { upsert: true },
   );
+  cacheDelPattern("prompts:search:*").catch(console.error);
+  return result;
 }
 
 function decodeCursor(value?: string) {
@@ -26,23 +29,28 @@ function decodeCursor(value?: string) {
 
 export async function searchPublicPromptIndex(input: { q?: string; category?: string; tag?: string; creator?: string; cursor?: string; limit?: number }) {
   const limit = Math.max(1, Math.min(Number(input.limit) || 20, 50));
-  const cursor = decodeCursor(input.cursor);
-  const query: Record<string, unknown> = { active: true };
-  if (input.q?.trim()) query.$text = { $search: input.q.trim().slice(0, 120) };
-  if (input.category) query.category = input.category;
-  if (input.tag) query.tags = input.tag.toLowerCase();
-  if (input.creator) query.creator = input.creator.toLowerCase();
-  if (cursor) query.$or = [{ createdAt: { $lt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $lt: cursor.id } }];
+  const cacheKeyStr = JSON.stringify({ ...input, limit });
+  const cacheKey = CACHE_KEYS.promptSearch(Buffer.from(cacheKeyStr).toString('base64url'));
 
-  const rows = await PromptSearchIndex.find(query)
-    .select("promptId title category preview tags creator active sourceLedger createdAt")
-    .sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
-  const hasMore = rows.length > limit;
-  const items = rows.slice(0, limit);
-  const last = items.at(-1);
-  return {
-    items,
-    nextCursor: hasMore && last ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last._id })).toString("base64url") : null,
-    staleAtLedger: items.reduce((min: number | null, row: any) => min == null ? row.sourceLedger : Math.min(min, row.sourceLedger), null),
-  };
+  return cacheGetOrLoad(cacheKey, async () => {
+    const cursor = decodeCursor(input.cursor);
+    const query: Record<string, unknown> = { active: true };
+    if (input.q?.trim()) query.$text = { $search: input.q.trim().slice(0, 120) };
+    if (input.category) query.category = input.category;
+    if (input.tag) query.tags = input.tag.toLowerCase();
+    if (input.creator) query.creator = input.creator.toLowerCase();
+    if (cursor) query.$or = [{ createdAt: { $lt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $lt: cursor.id } }];
+
+    const rows = await PromptSearchIndex.find(query)
+      .select("promptId title category preview tags creator active sourceLedger createdAt")
+      .sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last._id })).toString("base64url") : null,
+      staleAtLedger: items.reduce((min: number | null, row: any) => min == null ? row.sourceLedger : Math.min(min, row.sourceLedger), null),
+    };
+  });
 }
