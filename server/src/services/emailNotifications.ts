@@ -119,38 +119,107 @@ export function redactEmail(email: string | null | undefined): string {
   return `${redactedLocal}@${redactedDomain}`;
 }
 
+// ── HTML/Text escaping & safe link construction (#168) ─────────────────────────
+
+/**
+ * Escapes text for safe interpolation into HTML markup and strips line
+ * breaks. Prevents untrusted prompt metadata (titles, wallet fragments,
+ * transaction hashes, IDs) from injecting tags, attributes, or scripts
+ * into notification emails.
+ */
+export function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/\r\n|\r|\n/g, " ");
+}
+
+/**
+ * Strips CR/LF from values destined for the email subject line to prevent
+ * header injection via untrusted prompt metadata.
+ */
+export function sanitizeForSubject(value: string): string {
+  return String(value).replace(/[\r\n]+/g, " ").trim();
+}
+
+const DEFAULT_APP_ORIGIN = "https://prompthash.io";
+
+/**
+ * Validates and returns a single canonical HTTPS application origin.
+ * Falls back to the default origin whenever APP_URL is missing, malformed,
+ * or not HTTPS, so links can never point at an attacker-controlled or
+ * non-HTTPS origin.
+ */
+export function getAppOrigin(): string {
+  const raw = process.env.APP_URL;
+  if (!raw) return DEFAULT_APP_ORIGIN;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:") return DEFAULT_APP_ORIGIN;
+    return parsed.origin;
+  } catch {
+    return DEFAULT_APP_ORIGIN;
+  }
+}
+
+/**
+ * Builds a safe absolute link to a prompt page under the validated
+ * application origin, URL-encoding the prompt id path segment.
+ */
+export function buildPromptUrl(promptId: string): string {
+  return `${getAppOrigin()}/prompts/${encodeURIComponent(promptId)}`;
+}
+
 // ── Template builders ─────────────────────────────────────────────────────────
 
-function buildPurchaseEmail(payload: PurchasePayload): { subject: string; html: string } {
+function buildPurchaseEmail(payload: PurchasePayload): { subject: string; html: string; text: string } {
+  const title = escapeHtml(payload.promptTitle);
+  const subjectTitle = sanitizeForSubject(payload.promptTitle);
+  const walletFragment = escapeHtml(payload.buyerWallet.slice(0, 8));
+  const promptUrl = buildPromptUrl(payload.promptId);
+  const txHashHtml = payload.txHash
+    ? `<p>Transaction: <code>${escapeHtml(payload.txHash)}</code></p>`
+    : "";
+  const txHashText = payload.txHash ? `Transaction: ${payload.txHash}\n` : "";
+
   return {
-    subject: `🎉 Your prompt "${payload.promptTitle}" was purchased`,
+    subject: `🎉 Your prompt "${subjectTitle}" was purchased`,
     html: `
       <h2>Congratulations!</h2>
-      <p>A buyer (<code>${payload.buyerWallet.slice(0, 8)}…</code>) just purchased
-         your prompt <strong>${payload.promptTitle}</strong>.</p>
-      ${payload.txHash ? `<p>Transaction: <code>${payload.txHash}</code></p>` : ""}
-      <p><a href="${process.env.APP_URL ?? "https://prompthash.io"}/prompts/${payload.promptId}">
+      <p>A buyer (<code>${walletFragment}…</code>) just purchased
+         your prompt <strong>${title}</strong>.</p>
+      ${txHashHtml}
+      <p><a href="${promptUrl}">
         View prompt
       </a></p>
       <hr/>
       <small>To manage your notification preferences visit your account settings.</small>
     `,
+    text: `Congratulations!\n\nA buyer (${payload.buyerWallet.slice(0, 8)}…) just purchased your prompt "${payload.promptTitle}".\n${txHashText}View prompt: ${promptUrl}\n\nTo manage your notification preferences visit your account settings.`,
   };
 }
 
-function buildUpdateEmail(payload: UpdatePayload): { subject: string; html: string } {
+function buildUpdateEmail(payload: UpdatePayload): { subject: string; html: string; text: string } {
+  const title = escapeHtml(payload.promptTitle);
+  const subjectTitle = sanitizeForSubject(payload.promptTitle);
+  const promptUrl = buildPromptUrl(payload.promptId);
+
   return {
-    subject: `📦 Prompt updated: "${payload.promptTitle}" (v${payload.versionIndex + 1})`,
+    subject: `📦 Prompt updated: "${subjectTitle}" (v${payload.versionIndex + 1})`,
     html: `
       <h2>Prompt Updated</h2>
-      <p>The prompt <strong>${payload.promptTitle}</strong> you purchased has been updated
+      <p>The prompt <strong>${title}</strong> you purchased has been updated
          to version ${payload.versionIndex + 1}.</p>
-      <p><a href="${process.env.APP_URL ?? "https://prompthash.io"}/prompts/${payload.promptId}">
+      <p><a href="${promptUrl}">
         View updated prompt
       </a></p>
       <hr/>
       <small>To manage your notification preferences visit your account settings.</small>
     `,
+    text: `Prompt Updated\n\nThe prompt "${payload.promptTitle}" you purchased has been updated to version ${payload.versionIndex + 1}.\nView updated prompt: ${promptUrl}\n\nTo manage your notification preferences visit your account settings.`,
   };
 }
 
@@ -160,6 +229,7 @@ async function sendEmailWithTransport(
   to: string,
   subject: string,
   html: string,
+  text: string,
   timeoutMs: number = 5000
 ): Promise<void> {
   const transport = getPooledTransport();
@@ -173,7 +243,7 @@ async function sendEmailWithTransport(
 
   try {
     await Promise.race([
-      transport.sendMail({ from: FROM, to, subject, html }),
+      transport.sendMail({ from: FROM, to, subject, html, text }),
       timeoutPromise,
     ]);
     console.log(`[email] Sent "${subject}" to ${redactEmail(to)}`);
@@ -349,14 +419,17 @@ export async function processPendingJobs(options?: {
 
         let subject: string;
         let html: string;
+        let text: string;
         if (claimedJob.event === "PromptPurchased") {
           const content = buildPurchaseEmail(claimedJob.payload as PurchasePayload);
           subject = content.subject;
           html = content.html;
+          text = content.text;
         } else {
           const content = buildUpdateEmail(claimedJob.payload as UpdatePayload);
           subject = content.subject;
           html = content.html;
+          text = content.text;
         }
 
         try {
@@ -370,7 +443,7 @@ export async function processPendingJobs(options?: {
             return;
           }
 
-          await sendEmailWithTransport(email, subject, html, timeoutMs);
+          await sendEmailWithTransport(email, subject, html, text, timeoutMs);
 
           claimedJob.status = "completed";
           claimedJob.completedAt = new Date();
