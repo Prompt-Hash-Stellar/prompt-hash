@@ -94,7 +94,9 @@ fn set_fee_policy(
     if let Some(referral) = new_referral_bps {
         client.set_referral_percentage(&referral);
     }
-    let pending = client.get_pending_fee_policy().expect("expected a pending fee policy");
+    let pending = client
+        .get_pending_fee_policy()
+        .expect("expected a pending fee policy");
     env.ledger().with_mut(|ledger| {
         ledger.timestamp = pending.effective_at;
     });
@@ -576,11 +578,17 @@ fn test_get_prompts_by_creator_and_buyer() {
     );
 
     assert_eq!(
-        client.get_prompts_by_creator_page(&creator, &None, &50).prompts.len(),
+        client
+            .get_prompts_by_creator_page(&creator, &None, &50)
+            .prompts
+            .len(),
         2
     );
     assert_eq!(
-        client.get_prompts_by_buyer_page(&buyer, &None, &50).prompts.len(),
+        client
+            .get_prompts_by_buyer_page(&buyer, &None, &50)
+            .prompts
+            .len(),
         1
     );
 }
@@ -629,11 +637,17 @@ fn test_license_owner_can_transfer_and_creator_receives_royalty() {
     assert!(!client.has_access(&seller, &prompt_id));
     assert!(client.has_access(&buyer, &prompt_id));
     assert_eq!(
-        client.get_prompts_by_buyer_page(&seller, &None, &50).prompts.len(),
+        client
+            .get_prompts_by_buyer_page(&seller, &None, &50)
+            .prompts
+            .len(),
         0
     );
     assert_eq!(
-        client.get_prompts_by_buyer_page(&buyer, &None, &50).prompts.len(),
+        client
+            .get_prompts_by_buyer_page(&buyer, &None, &50)
+            .prompts
+            .len(),
         1
     );
 }
@@ -890,7 +904,10 @@ fn test_buy_prompt_with_max_fee() {
     client.release_funds_early(&buyer, &prompt_id);
 
     let expected_fee = price * 1_000 / 10_000;
-    assert_eq!(xlm_client.balance(&creator), seller_start + price - expected_fee);
+    assert_eq!(
+        xlm_client.balance(&creator),
+        seller_start + price - expected_fee
+    );
     assert_eq!(
         xlm_client.balance(&context.fee_wallet),
         fee_start + expected_fee
@@ -3708,7 +3725,14 @@ fn test_escrow_backed_refunds_and_dispute_voting_flow() {
     client.add_reviewer(&context.admin, &reviewer2);
     client.set_reviewer_threshold(&context.admin, &2);
 
-    let prompt_id = create_prompt(&env, &client, &creator, "Dispute Escrow Test", price, &context.xlm);
+    let prompt_id = create_prompt(
+        &env,
+        &client,
+        &creator,
+        "Dispute Escrow Test",
+        price,
+        &context.xlm,
+    );
     fund_buyer(&xlm_client, &buyer, &context.contract, price);
 
     // 1. Purchase prompt
@@ -3722,7 +3746,11 @@ fn test_escrow_backed_refunds_and_dispute_voting_flow() {
     assert!(client.has_access(&buyer, &prompt_id));
 
     // 2. Open dispute
-    client.open_dispute(&buyer, &prompt_id, &crate::types::DisputeReason::FailedIntegrityVerification);
+    client.open_dispute(
+        &buyer,
+        &prompt_id,
+        &crate::types::DisputeReason::FailedIntegrityVerification,
+    );
 
     // Verify access suspended
     assert!(!client.has_access(&buyer, &prompt_id));
@@ -3742,7 +3770,7 @@ fn test_escrow_backed_refunds_and_dispute_voting_flow() {
     // Verify dispute resolved as Refunded, license revoked, buyer refunded
     let escrow = client.get_escrow(&prompt_id, &buyer);
     assert_eq!(escrow.state, crate::types::EscrowState::Refunded);
-    
+
     // Warp ledger time past appeal window to execute final timeout payout
     env.ledger().with_mut(|l| {
         l.timestamp = l.timestamp + 3 * 24 * 3600 + 1;
@@ -3811,7 +3839,11 @@ fn test_dispute_appeal_mechanics() {
     fund_buyer(&xlm_client, &buyer, &context.contract, price);
 
     client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
-    client.open_dispute(&buyer, &prompt_id, &crate::types::DisputeReason::MissingMetadata);
+    client.open_dispute(
+        &buyer,
+        &prompt_id,
+        &crate::types::DisputeReason::MissingMetadata,
+    );
 
     // Reviewer votes to reject dispute (ruling in favor of creator)
     client.vote_on_dispute(&reviewer, &prompt_id, &buyer, &false);
