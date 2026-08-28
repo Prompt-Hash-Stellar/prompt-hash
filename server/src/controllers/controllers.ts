@@ -1,8 +1,9 @@
 import { Buffer } from "buffer";
-import { Keypair, StrKey } from "@stellar/stellar-sdk";
+import { Keypair, StrKey, Horizon, extractBaseAddress } from "@stellar/stellar-sdk";
 import { AuditLog } from "../models/AuditLog";
 import { Request, Response } from "express";
 import connectDb from "../db/connectDb";
+import { stellarConfig } from "../config/stellar";
 import User from "../models/User";
 import Prompt from "../models/Prompt";
 import Report from "../models/Report";
@@ -872,8 +873,6 @@ export const UpdatePayoutSettings = async (
 
     // Stellar network validation
     try {
-      const { Horizon, extractBaseAddress } = require("@stellar/stellar-sdk");
-      const { stellarConfig } = require("../config/stellar");
       const horizon = new Horizon.Server(stellarConfig.PUBLIC_STELLAR_HORIZON_URL);
       
       const baseAddress = isMuxed ? extractBaseAddress(payoutAddress) : payoutAddress;

@@ -3,7 +3,7 @@ import {
   WalletNetwork, 
   allowAllModules 
 } from "@creit.tech/stellar-wallets-kit";
-import { Horizon } from "@stellar/stellar-sdk";
+import { Horizon, extractBaseAddress } from "@stellar/stellar-sdk";
 import { horizonUrl, stellarNetwork, stellarWalletNetwork } from "../lib/env";
 
 // allowAllModules() returns an array containing albedo, freighter, etc.
@@ -31,7 +31,6 @@ export const fetchBalance = async (address: string) => {
   });
 
   try {
-    const { extractBaseAddress } = require("@stellar/stellar-sdk");
     const baseAddress = address.startsWith("M") ? extractBaseAddress(address) : address;
     const { balances } = await horizon.accounts().accountId(baseAddress).call();
     return { ok: true, balances };
