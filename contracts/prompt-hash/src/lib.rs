@@ -5,8 +5,8 @@
 mod contract;
 mod events;
 mod storage;
-mod types;
 mod ttl_policy;
+mod types;
 
 #[cfg(test)]
 mod mock_asset;
