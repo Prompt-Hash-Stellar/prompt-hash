@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "build": "tsc",
+    "check-ttl": "ts-node scripts/checkTtlReadiness.ts",
     "dev": "nodemon --watch src --exec ts-node src/server.ts",
     "start": "node build/server.js",
     "backup": "ts-node scripts/runBackup.ts",

@@ -5,8 +5,6 @@ use super::types::{
 use soroban_sdk::{token, Address, BytesN, Env, String, Vec};
 
 pub const DAY_IN_LEDGERS: u32 = 17280;
-pub const PERSISTENT_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
-pub const PERSISTENT_LIFETIME_THRESHOLD: u32 = 7 * DAY_IN_LEDGERS;
 /// Hard cap on any single page of discovery-index results, independent of
 /// market size (#83). A `limit` of `0` or greater than this is clamped down.
 pub const MAX_PAGE_SIZE: u32 = 50;
@@ -233,8 +231,8 @@ impl Storage {
         if env.storage().persistent().has(key) {
             env.storage().persistent().extend_ttl(
                 key,
-                PERSISTENT_LIFETIME_THRESHOLD,
-                PERSISTENT_BUMP_AMOUNT,
+                crate::ttl_policy::PERSISTENT_LIFETIME_THRESHOLD,
+                crate::ttl_policy::PERSISTENT_BUMP_AMOUNT,
             );
         }
     }

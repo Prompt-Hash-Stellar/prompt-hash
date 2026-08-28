@@ -48,8 +48,8 @@ impl PromptHashTrait for PromptHashContract {
         InstanceStorage::set_xlm_address(&env, &xlm_sac);
         InstanceStorage::set_pause_status(&env, false);
         env.storage().instance().extend_ttl(
-            super::storage::PERSISTENT_LIFETIME_THRESHOLD,
-            super::storage::PERSISTENT_BUMP_AMOUNT,
+            crate::ttl_policy::PERSISTENT_LIFETIME_THRESHOLD,
+            crate::ttl_policy::PERSISTENT_BUMP_AMOUNT,
         );
         Ok(())
     }
@@ -1092,8 +1092,8 @@ impl PromptHashTrait for PromptHashContract {
         let new_epoch = InstanceStorage::increment_upgrade_epoch(&env)?;
 
         env.storage().instance().extend_ttl(
-            super::storage::PERSISTENT_LIFETIME_THRESHOLD,
-            super::storage::PERSISTENT_BUMP_AMOUNT,
+            crate::ttl_policy::PERSISTENT_LIFETIME_THRESHOLD,
+            crate::ttl_policy::PERSISTENT_BUMP_AMOUNT,
         );
         Storage::extend_all_ttl(&env);
 
