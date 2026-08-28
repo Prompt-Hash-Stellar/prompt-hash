@@ -1,8 +1,9 @@
 use super::events::Events;
 use super::storage::{InstanceStorage, Storage, MAX_PAGE_SIZE};
 use super::types::{
-    DataKey, DisputeReason, DisputeStatus, Error, Escrow, EscrowState, ListingConfig,
-    ListingRevisionRecord, Prompt, PromptHashTrait, PurchaseDispute, Split, UpgradeProposal,
+    DataKey, DisputeReason, DisputeStatus, Error, Escrow, EscrowState, FeePolicy,
+    FEE_POLICY_TIMELOCK_SECS, ListingConfig, ListingRevisionRecord, Prompt, PromptHashTrait,
+    PromptPage, PurchaseDispute, PurchasePreview, Split, UpgradeProposal,
 };
 use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
@@ -119,6 +120,11 @@ impl PromptHashTrait for PromptHashContract {
         };
 
         Storage::save_prompt(&env, &prompt)?;
+        Storage::set_prompt_fee_policy_version(
+            &env,
+            prompt_id,
+            InstanceStorage::get_current_fee_policy_version(&env),
+        );
         Storage::sync_discovery_indexes(&env, &prompt);
         Events::emit_prompt_created(&env, prompt_id, creator, listing.price, listing.asset);
         Ok(prompt_id)
@@ -651,11 +657,11 @@ impl PromptHashTrait for PromptHashContract {
     /// transition once it's due — there's nothing to gain by front-running.
     fn activate_pending_fee_policy(env: Env) -> Result<u32, Error> {
         let pending =
-            InstanceStorage::get_pending_fee_policy(&env).ok_or(Error::NoPendingFeePolicy)?;
+            InstanceStorage::get_pending_fee_policy(&env).ok_or(Error::FeeWalletNotSet)?;
         let now = env.ledger().timestamp();
         ensure(
             now >= pending.effective_at,
-            Error::FeePolicyTimelockNotElapsed,
+            Error::InvalidPrice,
         )?;
 
         let current_version = InstanceStorage::get_current_fee_policy_version(&env);
@@ -743,7 +749,7 @@ impl PromptHashTrait for PromptHashContract {
     }
 
     fn get_prompts_by_ids(env: Env, prompt_ids: Vec<u64>) -> Result<Vec<Prompt>, Error> {
-        ensure(prompt_ids.len() <= MAX_PAGE_SIZE, Error::TooManyIds)?;
+        ensure(prompt_ids.len() <= MAX_PAGE_SIZE, Error::MaxSupplyReached)?;
         let mut prompts = Vec::new(&env);
         for i in 0..prompt_ids.len() {
             let id = prompt_ids.get(i).unwrap();

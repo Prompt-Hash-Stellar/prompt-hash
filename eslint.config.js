@@ -21,6 +21,9 @@ export default tseslint.config(
     languageOptions: {
       ecmaVersion: 2020,
       globals: globals.browser,
+      parserOptions: {
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     // Removed the plugins key entirely to stop the legacy array format extraction crash
     rules: {

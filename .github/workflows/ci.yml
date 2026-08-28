@@ -15,9 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.89.0"
           targets: wasm32v1-none
           components: rustfmt, clippy
 
@@ -79,24 +80,25 @@ jobs:
   api:
     name: API (Express / server)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Enable Corepack
-        run: corepack enable
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "yarn"
+          cache: "npm"
+          cache-dependency-path: server/package-lock.json
 
       - name: Install dependencies
-        run: yarn install --immutable
+        run: npm ci
 
       - name: API / server tests
-        run: yarn test:api --if-present
+        run: npm test
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────────
   ci-gate:

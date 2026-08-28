@@ -30,11 +30,12 @@ import {
 } from "../services/similarityJobQueue";
 import * as mongoose from "mongoose";
 
+const HAS_TEST_DB = Boolean(process.env.MONGODB_TEST_URI);
+const dbDescribe = HAS_TEST_DB ? describe : describe.skip;
+
 // Mock database setup
 beforeAll(async () => {
-  // Connect to test MongoDB (or use in-memory mock)
-  // This assumes MongoDB is running or MONGODB_URI env var is set
-  if (!process.env.MONGODB_TEST_URI) {
+  if (!HAS_TEST_DB) {
     console.warn("Skipping database tests: MONGODB_TEST_URI not set");
     return;
   }
@@ -43,6 +44,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!HAS_TEST_DB) return;
   await SimilarityJob.deleteMany({});
   await Prompt.deleteMany({});
   await mongoose.disconnect();
@@ -94,7 +96,7 @@ describe("Fingerprinting Service", () => {
   });
 });
 
-describe("Similarity Worker", () => {
+dbDescribe("Similarity Worker", () => {
   beforeEach(async () => {
     await Prompt.deleteMany({});
     await SimilarityJob.deleteMany({});
@@ -234,7 +236,7 @@ describe("Similarity Worker", () => {
   });
 });
 
-describe("Similarity Job Queue", () => {
+dbDescribe("Similarity Job Queue", () => {
   beforeEach(async () => {
     await Prompt.deleteMany({});
     await SimilarityJob.deleteMany({});
@@ -389,7 +391,7 @@ describe("Similarity Job Queue", () => {
   });
 });
 
-describe("Performance and Scalability", () => {
+dbDescribe("Performance and Scalability", () => {
   beforeEach(async () => {
     await Prompt.deleteMany({});
     await SimilarityJob.deleteMany({});
@@ -479,7 +481,7 @@ describe("Performance and Scalability", () => {
   });
 });
 
-describe("Privacy and Reproducibility", () => {
+dbDescribe("Privacy and Reproducibility", () => {
   test("should not store plaintext in jobs", async () => {
     const prompt = await Prompt.create({
       onChainId: "privacy-test",

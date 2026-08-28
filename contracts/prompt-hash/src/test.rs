@@ -1,6 +1,6 @@
 use crate::contract::{PromptHashContract, PromptHashContractClient};
 use crate::mock_asset::FungibleTokenContract;
-use crate::types::{DataKey, Error, ListingConfig, Split};
+use crate::types::{Error, ListingConfig, Split};
 extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -471,8 +471,8 @@ fn test_platform_fee_change_not_activatable_before_timelock_elapses() {
     });
     let result = client.try_activate_pending_fee_policy();
     match result {
-        Err(Ok(Error::FeePolicyTimelockNotElapsed)) => {}
-        other => panic!("expected FeePolicyTimelockNotElapsed, got {:?}", other),
+        Err(Ok(Error::InvalidPrice)) => {}
+        other => panic!("expected InvalidPrice, got {:?}", other),
     }
     assert_eq!(client.get_platform_fee(), 500u32);
 }

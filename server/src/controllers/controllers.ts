@@ -16,6 +16,12 @@ import { hashWalletAddress } from "../services/auditTrail";
 import mongoose from "mongoose";
 import { issuePreviewToken, recordPreviewEvent } from "../services/previewAnalytics";
 import { PreviewEvent } from "../models/PreviewEvent";
+import {
+  generateRequestId,
+  logProxyException,
+  logProxySuccess,
+  logProxyUpstreamError,
+} from "../utils/proxyLogger";
 
 const API_BASE_URL = "https://secret-ai-gateway.onrender.com";
 

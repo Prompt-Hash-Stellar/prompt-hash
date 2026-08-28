@@ -8,7 +8,7 @@
  */
 
 import nodemailer from "nodemailer";
-import User from "../models/User.js";
+import User from "../models/User";
 import EmailNotificationJob, {
   IEmailNotificationJob,
   JobStatus,
@@ -80,7 +80,9 @@ export async function closeTransport(): Promise<void> {
   if (activeTransport) {
     try {
       activeTransport.close();
-    } catch {}
+    } catch {
+      // Closing the transport is best-effort; a failure here is safe to ignore.
+    }
     activeTransport = null;
   }
 }
