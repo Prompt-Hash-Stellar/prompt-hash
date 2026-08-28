@@ -31,7 +31,9 @@ export const fetchBalance = async (address: string) => {
   });
 
   try {
-    const { balances } = await horizon.accounts().accountId(address).call();
+    const { extractBaseAddress } = require("@stellar/stellar-sdk");
+    const baseAddress = address.startsWith("M") ? extractBaseAddress(address) : address;
+    const { balances } = await horizon.accounts().accountId(baseAddress).call();
     return { ok: true, balances };
   } catch (e) {
     // Re-throw the error so callers can handle it appropriately

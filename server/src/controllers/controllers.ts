@@ -859,12 +859,36 @@ export const UpdatePayoutSettings = async (
     const { payoutAddress, signature, signedMessage } = req.body;
 
     // Validate StrKey
-    if (!StrKey.isValidEd25519PublicKey(payoutAddress)) {
+    const isEd25519 = StrKey.isValidEd25519PublicKey(payoutAddress);
+    const isMuxed = StrKey.isValidMed25519PublicKey(payoutAddress);
+
+    if (!isEd25519 && !isMuxed) {
       return res.status(400).json({ error: "Invalid Stellar payout address" });
     }
 
     if (!signature || !signedMessage) {
       return res.status(400).json({ error: "Signature and signedMessage are required" });
+    }
+
+    // Stellar network validation
+    try {
+      const { Horizon, extractBaseAddress } = require("@stellar/stellar-sdk");
+      const { stellarConfig } = require("../config/stellar");
+      const horizon = new Horizon.Server(stellarConfig.PUBLIC_STELLAR_HORIZON_URL);
+      
+      const baseAddress = isMuxed ? extractBaseAddress(payoutAddress) : payoutAddress;
+      const account = await horizon.accounts().accountId(baseAddress).call();
+      
+      // If base address requires a memo and a plain G-address was provided, reject.
+      if (isEd25519 && account.data_attr && account.data_attr["config.memo_required"] === "MQ==") {
+        return res.status(400).json({ error: "Destination requires a memo. Please provide a Muxed Account (M...) address instead." });
+      }
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        return res.status(400).json({ error: "Payout account is not funded on the Stellar network" });
+      }
+      console.error("Error validating payout address:", err);
+      return res.status(500).json({ error: "Failed to validate payout address" });
     }
 
     // Verify recent re-auth signature

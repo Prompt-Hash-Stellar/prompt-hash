@@ -8,7 +8,8 @@ Welcome to PromptHash Stellar! This guide helps non-technical prompt engineers g
 - [Getting Started Checklist](#getting-started-checklist)
 - [Step 1: Set Up Your Freighter Wallet](#step-1-set-up-your-freighter-wallet)
 - [Step 2: Fund Your Wallet with XLM](#step-2-fund-your-wallet-with-xlm)
-- [Step 3: List Your First Prompt](#step-3-list-your-first-prompt)
+- [Step 3: Configure Payout Settings](#step-3-configure-payout-settings)
+- [Step 4: List Your First Prompt](#step-4-list-your-first-prompt)
 - [Best Practices for Previews](#best-practices-for-previews)
 - [Pricing Your Prompts](#pricing-your-prompts)
 - [Marketing and Discovery](#marketing-and-discovery)
@@ -185,7 +186,22 @@ You need to buy real XLM from an exchange:
 
 ---
 
-## Step 3: List Your First Prompt
+## Step 3: Configure Payout Settings
+
+Before you start earning, you may want to configure where your XLM from sales is sent. By default, it is sent to your connected wallet.
+
+### Payout Destination Rules
+
+To ensure safe marketplace settlement, your payout destination must be:
+1. **A valid Stellar address** (starting with `G` or `M`)
+2. **Fully funded** on the Stellar network (contains the minimum XLM reserve)
+3. **Memo-compatible**: If your exchange requires a memo to receive deposits, you **must** use a Muxed Account address (starts with `M...`) which has the memo embedded. Plain `G...` addresses for memo-required accounts will be rejected by our verification system to protect your funds.
+
+To update your payout settings, visit your **Creator Profile** > **Payout Settings**.
+
+---
+
+## Step 4: List Your First Prompt
 
 ### Before You List
 
