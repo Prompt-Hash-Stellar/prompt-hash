@@ -220,6 +220,7 @@ export async function cacheGetOrLoad<T>(
 export const CACHE_KEYS = {
   promptList: (query: string) => `prompts:list:${query}`,
   promptDetail: (id: string) => `prompts:detail:${id}`,
+  promptSearch: (query: string) => `prompts:search:${query}`,
 };
 
 export function __resetCacheForTests(): void {

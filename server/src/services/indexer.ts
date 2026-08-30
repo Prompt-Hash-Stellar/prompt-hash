@@ -7,6 +7,7 @@ import { IndexerState } from "../models/IndexerState";
 import { enqueueSimilarityScan, startSimilarityWorker } from "./similarityJobQueue";
 import { indexPromptProjection } from "./promptSearchIndex";
 import { stellarConfig } from "../config/stellar";
+import { cacheDel, cacheDelPattern, CACHE_KEYS } from "./cacheService";
 
 const CONTRACT_ID = stellarConfig.PUBLIC_PROMPT_HASH_CONTRACT_ID;
 const rpc = new Server(stellarConfig.PUBLIC_STELLAR_RPC_URL);
@@ -157,5 +158,15 @@ async function processEvent(event: any) {
     default:
       console.log(`Unhandled event topic: ${topic}`);
       break;
+  }
+
+  // Invalidate caches if this event updated a prompt
+  if (["PromptCreated", "PromptPurchased", "PromptPriceUpdated", "PromptSaleStatusUpdated"].includes(topic)) {
+    const promptIdStr = data.prompt_id?.toString();
+    if (promptIdStr) {
+      await cacheDel(CACHE_KEYS.promptDetail(promptIdStr));
+      await cacheDelPattern("prompts:list:*");
+      await cacheDelPattern("prompts:search:*");
+    }
   }
 }
