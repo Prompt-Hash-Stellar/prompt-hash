@@ -230,14 +230,20 @@ The API supports server-side pagination to:
 
 ### Health Check
 
-The `/health` endpoint returns indexer status:
+The `/health` endpoint reports readiness (not just liveness): it returns
+`503` with one or more redacted `reasons` codes when the indexer checkpoint
+is stale, the quarantine backlog is over threshold, the indexer lease is
+expired, or backups are unhealthy. `GET /health/live` is a dependency-free
+liveness check.
 
 ```json
 {
-  "status": "ok",
+  "status": "ready",
+  "checkedAt": "2024-01-01T00:00:00.000Z",
+  "reasons": [],
   "indexer": {
     "lastProcessedLedger": 12345,
-    "timestamp": "2024-01-01T00:00:00Z"
+    "lastUpdatedAt": "2024-01-01T00:00:00.000Z"
   },
   "backup": { ... }
 }

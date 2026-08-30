@@ -13,8 +13,7 @@ import searchRouter from "./routes/searchRoutes";
 import { fulfillmentRouter } from "./routes/fulfillmentRoutes";
 import { reconciliationRouter } from "./routes/reconciliationRoutes";
 import { reviewRouter } from "./routes/reviewRoutes";
-import { getBackupHealth } from "./services/backupService";
-import { IndexerState } from "./models/IndexerState";
+import { computeReadiness } from "./services/healthService";
 import {
   globalLimiter,
   authLimiter,
@@ -84,30 +83,21 @@ app.use("/api/reviews", defaultJsonLimit, reviewRouter);
 
 app.post("/api/test-prompt", defaultJsonLimit, strictLimiter, TestPromptProxy);
 
+// Liveness: process is up and able to respond. No dependency checks, so it
+// never reports failure because of a slow/unhealthy database or backup -
+// that is the readiness check's job below.
+app.get("/health/live", (_req, res) => {
+  res.json({ status: "ok", checkedAt: new Date().toISOString() });
+});
+
+// Readiness: the API is only ready when its required dependencies are.
+// Reports a bounded, redacted set of reason codes and a measurement
+// timestamp, and responds 503 (not 200) when the indexer checkpoint is
+// stale, the quarantine backlog is over threshold, the indexer lease is
+// expired, or backups are unhealthy - see services/healthService.ts.
 app.get("/health", async (req, res) => {
-  const [state, backupHealth] = await Promise.all([
-    IndexerState.findOne({ key: "prompt_hash_contract" }),
-    getBackupHealth(),
-  ]);
-  res.json({
-    status: "ok",
-    indexer: {
-      lastProcessedLedger: state?.lastIndexedLedger || 0,
-      sourceCheckpoint: state?.sourceCheckpoint || state?.lastIndexedLedger || 0,
-      rawEventCheckpoint: state?.rawEventCheckpoint || state?.lastIndexedLedger || 0,
-      projectionCheckpoint: state?.projectionCheckpoint || 0,
-      quarantinedFailures: state?.quarantinedFailures || 0,
-      lease: state?.leaseOwner
-        ? {
-            ownerId: state.leaseOwner,
-            fencingToken: state.leaseFencingToken || 0,
-            expiresAt: state.leaseExpiresAt,
-          }
-        : null,
-      timestamp: new Date(),
-    },
-    backup: backupHealth,
-  });
+  const readiness = await computeReadiness();
+  res.status(readiness.status === "ready" ? 200 : 503).json(readiness);
 });
 
 // Sentry error handler must be registered after all routes (#332).

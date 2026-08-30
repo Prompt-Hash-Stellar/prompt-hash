@@ -92,8 +92,10 @@ The `/health` endpoint includes backup status:
 
 ```json
 {
-  "status": "ok",
-  "indexer": { "lastProcessedLedger": 12345678, "timestamp": "..." },
+  "status": "ready",
+  "checkedAt": "...",
+  "reasons": [],
+  "indexer": { "lastProcessedLedger": 12345678, "lastUpdatedAt": "..." },
   "backup": {
     "lastRun": "2025-05-27T02:00:12.000Z",
     "lastStatus": "success",
@@ -107,7 +109,10 @@ A backup is considered **unhealthy** if:
 - `lastStatus` is `"failure"` or `"never"`
 - `ageHours` > 26 (missed a daily window)
 
-Set up an alert on `backup.healthy === false` in your monitoring tool.
+An unhealthy backup puts the overall response into `status: "not_ready"`
+(HTTP 503) with `"backup_unhealthy"` in `reasons`. Set up an alert on
+`backup.healthy === false` (or a non-2xx `/health` response) in your
+monitoring tool.
 
 ---
 
