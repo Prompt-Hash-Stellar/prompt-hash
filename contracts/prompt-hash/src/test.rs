@@ -3906,7 +3906,7 @@ fn test_buyer_with_zero_balance_cannot_purchase_and_access_not_granted() {
     );
     // Buyer catalog must remain empty
     assert_eq!(
-        client.get_prompts_by_buyer(&broke_buyer).len(),
+        client.get_prompts_by_buyer_page(&broke_buyer, &None, &50).prompts.len(),
         0,
         "buyer catalog must be empty after a failed purchase"
     );
@@ -3995,20 +3995,20 @@ fn test_buyer_catalog_updated_correctly_after_license_transfer() {
     client.buy_prompt(&seller, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
 
     // Before transfer: seller has 1 entry, new_owner has 0
-    assert_eq!(client.get_prompts_by_buyer(&seller).len(), 1);
-    assert_eq!(client.get_prompts_by_buyer(&new_owner).len(), 0);
+    assert_eq!(client.get_prompts_by_buyer_page(&seller, &None, &50).prompts.len(), 1);
+    assert_eq!(client.get_prompts_by_buyer_page(&new_owner, &None, &50).prompts.len(), 0);
 
     let resale_price: i128 = 15_000;
     client.transfer_license(&seller, &prompt_id, &new_owner, &resale_price);
 
     // After transfer: seller's catalog is empty, new_owner has 1 entry
     assert_eq!(
-        client.get_prompts_by_buyer(&seller).len(),
+        client.get_prompts_by_buyer_page(&seller, &None, &50).prompts.len(),
         0,
         "seller catalog must be empty after transfer"
     );
     assert_eq!(
-        client.get_prompts_by_buyer(&new_owner).len(),
+        client.get_prompts_by_buyer_page(&new_owner, &None, &50).prompts.len(),
         1,
         "recipient catalog must contain the transferred prompt"
     );
@@ -4084,12 +4084,12 @@ fn test_multiple_creators_catalogs_are_independent() {
     create_prompt(&env, &client, &creator_b, "B Prompt 1", 3_000, &context.xlm);
 
     assert_eq!(
-        client.get_prompts_by_creator(&creator_a).len(),
+        client.get_prompts_by_creator_page(&creator_a, &None, &50).prompts.len(),
         2,
         "creator_a must see exactly 2 prompts"
     );
     assert_eq!(
-        client.get_prompts_by_creator(&creator_b).len(),
+        client.get_prompts_by_creator_page(&creator_b, &None, &50).prompts.len(),
         1,
         "creator_b must see exactly 1 prompt"
     );
