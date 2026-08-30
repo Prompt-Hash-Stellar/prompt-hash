@@ -1,6 +1,7 @@
 import { Button } from "./ui/button";
 // import Link from "next/link";
 import { Link } from "react-router-dom";
+import { OptimizedImage } from "./ui/OptimizedImage";
 
 const categories = [
   {
@@ -34,14 +35,15 @@ export function CategoryShowcase() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           {categories.map((category) => (
             <Link to={`/category/${category.id}`} key={category.id}>
-              <div className="relative group overflow-hidden rounded-lg">
-                <div className="aspect-[4/3] overflow-hidden">
-                  <img
-                    src={category.image || "/placeholder.svg"}
-                    alt={category.name}
-                    className="object-cover w-full h-full transition-transform group-hover:scale-105"
-                  />
-                </div>
+              <div className="relative group rounded-lg overflow-hidden">
+                <OptimizedImage
+                  src={category.image}
+                  alt={category.name}
+                  aspectRatio="4/3"
+                  loading="lazy"
+                  wrapperClassName="w-full"
+                  className="transition-transform group-hover:scale-105"
+                />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent flex flex-col justify-end p-4">
                   <h3 className="text-lg font-semibold text-white">
                     {category.name}

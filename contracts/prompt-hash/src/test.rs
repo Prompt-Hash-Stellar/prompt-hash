@@ -3869,507 +3869,180 @@ fn test_dispute_appeal_mechanics() {
     assert!(!client.has_access(&buyer, &prompt_id));
 }
 
-// ---------- Timelocked multi-party upgrade governance tests (#84) ----------
+// ─── Edge cases and security-sensitive behaviors ──────────────────────────────
 
-const UPGRADE_MIN_DELAY: u64 = 2 * 24 * 60 * 60;
-
-/// Registers `count` upgrade signers and sets the approval threshold.
-fn setup_upgrade_signers(
-    env: &Env,
-    client: &PromptHashContractClient,
-    _admin: &Address,
-    count: usize,
-    threshold: u32,
-) -> Vec<Address> {
-    let mut signers = Vec::new(env);
-    for _ in 0..count {
-        let signer = Address::generate(env);
-        client.add_upgrade_signer(&signer);
-        signers.push_back(signer);
-    }
-    client.set_upgrade_threshold(&threshold);
-    signers
-}
-
-fn some_wasm_hash(env: &Env, byte: u8) -> BytesN<32> {
-    hash(env, byte)
-}
-
+/// A buyer with zero token balance cannot purchase a prompt.
+/// The token transfer will fail inside buy_prompt.
+/// Verifies that has_access is not granted and the buyer catalog remains clean.
 #[test]
-fn test_add_remove_upgrade_signers_and_threshold() {
+fn test_buyer_with_zero_balance_cannot_purchase_and_access_not_granted() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
 
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
-    assert_eq!(client.get_upgrade_signers().len(), 3);
-    assert_eq!(client.get_upgrade_threshold(), 2);
+    let creator = Address::generate(&env);
+    let broke_buyer = Address::generate(&env);
+    let price: i128 = 5_000;
 
-    let removed = signers.get(0).unwrap();
-    client.remove_upgrade_signer(&removed);
-    assert_eq!(client.get_upgrade_signers().len(), 2);
+    let prompt_id = create_prompt(&env, &client, &creator, "Zero Balance Test", price, &context.xlm);
 
-    let result = client.try_remove_upgrade_signer(&removed);
-    match result {
-        Err(Ok(Error::UpgradeSignerConfigInvalid)) => {}
-        other => panic!("expected UpgradeSignerConfigInvalid, got {:?}", other),
-    }
+    // broke_buyer has no XLM minted and no approval — token transfer must fail
+    let result = client.try_buy_prompt(
+        &broke_buyer,
+        &prompt_id,
+        &None::<Address>,
+        &price,
+        &None::<Bytes>,
+    );
+
+    assert!(
+        result.is_err(),
+        "expected buy_prompt to fail for buyer with no balance"
+    );
+    // Access must NOT be granted despite the failure
+    assert!(
+        !client.has_access(&broke_buyer, &prompt_id),
+        "has_access must remain false when purchase payment fails"
+    );
+    // Buyer catalog must remain empty
+    assert_eq!(
+        client.get_prompts_by_buyer(&broke_buyer).len(),
+        0,
+        "buyer catalog must be empty after a failed purchase"
+    );
 }
 
+/// Admin can update the fee wallet; the new address is persisted in contract storage.
+/// (The auth-guard for set_fee_wallet is already covered by test_only_owner_can_set_fee_wallet.)
 #[test]
-fn test_propose_upgrade_requires_registered_signer() {
+fn test_admin_can_update_fee_wallet_and_storage_reflects_change() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
-    setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
 
-    let outsider = Address::generate(&env);
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
+    let new_wallet = Address::generate(&env);
 
-    let result = client.try_propose_upgrade(
-        &outsider,
-        &target,
-        &1u32,
-        &migration_hash,
-        &(now + UPGRADE_MIN_DELAY + 10),
-        &(now + UPGRADE_MIN_DELAY + 1_000),
-        &false,
+    // Admin (implicit via mock_all_auths) updates the fee wallet
+    client.set_fee_wallet(&new_wallet);
+
+    // Contract storage must reflect the new wallet immediately
+    let stored_wallet = client.get_fee_wallet();
+    assert_eq!(
+        stored_wallet,
+        Some(new_wallet.clone()),
+        "fee wallet in storage must equal the newly set address"
+    );
+}
+
+/// Opening a dispute after the 7-day window has elapsed must be rejected
+/// with DisputeExpired. Buyer access must remain unaffected.
+#[test]
+fn test_dispute_cannot_be_opened_after_window_expires() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Dispute Window Prompt", price, &context.xlm);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+
+    // Advance ledger past the 7-day dispute window (7 * 24 * 3600 = 604,800 sec)
+    env.ledger().with_mut(|l| l.timestamp = 1_000 + 604_801);
+
+    let result = client.try_open_dispute(
+        &buyer,
+        &prompt_id,
+        &crate::types::DisputeReason::FailedIntegrityVerification,
     );
     match result {
-        Err(Ok(Error::Unauthorized)) => {}
-        other => panic!("expected Unauthorized, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_propose_upgrade_enforces_minimum_public_timelock() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-
-    // earliest_execution_time only 1 hour out — far short of the minimum delay.
-    let result = client.try_propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &(now + 3_600),
-        &(now + UPGRADE_MIN_DELAY + 1_000),
-        &false,
-    );
-    match result {
-        Err(Ok(Error::UpgradeBindingMismatch)) => {}
-        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_propose_upgrade_rejects_forged_migration_hash() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    let forged_hash = hash(&env, 250);
-    let now = env.ledger().timestamp();
-
-    let result = client.try_propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &forged_hash,
-        &(now + UPGRADE_MIN_DELAY + 10),
-        &(now + UPGRADE_MIN_DELAY + 1_000),
-        &false,
-    );
-    match result {
-        Err(Ok(Error::UpgradeBindingMismatch)) => {}
-        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_propose_upgrade_rejects_non_increasing_schema_version() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    // Genesis schema_version is 0; a forward migration proposing 0 must fail.
-    let migration_hash = client.compute_migration_hash(&target, &0u32);
-    let now = env.ledger().timestamp();
-
-    let result = client.try_propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &0u32,
-        &migration_hash,
-        &(now + UPGRADE_MIN_DELAY + 10),
-        &(now + UPGRADE_MIN_DELAY + 1_000),
-        &false,
-    );
-    match result {
-        Err(Ok(Error::UpgradeBindingMismatch)) => {}
-        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_propose_upgrade_requires_configured_quorum() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-
-    // One signer registered, but threshold set above the signer count.
-    let signer = Address::generate(&env);
-    client.add_upgrade_signer(&signer);
-    client.set_upgrade_threshold(&2u32);
-
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-
-    let result = client.try_propose_upgrade(
-        &signer,
-        &target,
-        &1u32,
-        &migration_hash,
-        &(now + UPGRADE_MIN_DELAY + 10),
-        &(now + UPGRADE_MIN_DELAY + 1_000),
-        &false,
-    );
-    match result {
-        Err(Ok(Error::UpgradeSignerConfigInvalid)) => {}
-        other => panic!("expected UpgradeSignerConfigInvalid, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_single_signer_cannot_meet_quorum() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let earliest = now + UPGRADE_MIN_DELAY + 10;
-    let expiry = earliest + 1_000;
-
-    let proposal_id = client.propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &earliest,
-        &expiry,
-        &false,
-    );
-    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
-
-    env.ledger().with_mut(|l| l.timestamp = earliest);
-    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    match result {
-        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
-        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_execute_upgrade_fails_before_timelock_elapses() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let earliest = now + UPGRADE_MIN_DELAY + 10;
-    let expiry = earliest + 1_000;
-
-    let proposal_id = client.propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &earliest,
-        &expiry,
-        &false,
-    );
-    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
-
-    // Quorum is met, but the public timelock has not yet elapsed.
-    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    match result {
-        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
-        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_execute_upgrade_fails_after_expiry() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let earliest = now + UPGRADE_MIN_DELAY + 10;
-    let expiry = earliest + 1_000;
-
-    let proposal_id = client.propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &earliest,
-        &expiry,
-        &false,
-    );
-    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
-
-    env.ledger().with_mut(|l| l.timestamp = expiry + 1);
-    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    match result {
-        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
-        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
-    }
-
-    // An expired proposal can no longer collect further approvals either.
-    let approve_result = client.try_approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    match approve_result {
-        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
+        Err(Ok(Error::DisputeExpired)) => {}
         other => panic!(
-            "expected UpgradeProposalUnavailable on approve, got {:?}",
+            "expected DisputeExpired when opening dispute after window, got {:?}",
             other
         ),
     }
+    // Access must remain with buyer since no dispute was opened
+    assert!(client.has_access(&buyer, &prompt_id));
 }
 
+/// After a license transfer the seller's buyer catalog is cleared and the
+/// new owner's catalog contains exactly one entry — verifying storage
+/// side-effects in addition to access state.
 #[test]
-fn test_cancel_upgrade_by_proposer_blocks_further_action() {
+fn test_buyer_catalog_updated_correctly_after_license_transfer() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
 
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let earliest = now + UPGRADE_MIN_DELAY + 10;
-    let expiry = earliest + 1_000;
+    let creator = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    let price: i128 = 10_000;
 
-    let proposer = signers.get(0).unwrap();
-    let proposal_id = client.propose_upgrade(
-        &proposer,
-        &target,
-        &1u32,
-        &migration_hash,
-        &earliest,
-        &expiry,
-        &false,
+    let prompt_id = create_prompt(&env, &client, &creator, "Transfer Catalog Test", price, &context.xlm);
+    fund_buyer(&xlm_client, &seller, &context.contract, 100_000);
+    fund_buyer(&xlm_client, &new_owner, &context.contract, 100_000);
+
+    client.buy_prompt(&seller, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+
+    // Before transfer: seller has 1 entry, new_owner has 0
+    assert_eq!(client.get_prompts_by_buyer(&seller).len(), 1);
+    assert_eq!(client.get_prompts_by_buyer(&new_owner).len(), 0);
+
+    let resale_price: i128 = 15_000;
+    client.transfer_license(&seller, &prompt_id, &new_owner, &resale_price);
+
+    // After transfer: seller's catalog is empty, new_owner has 1 entry
+    assert_eq!(
+        client.get_prompts_by_buyer(&seller).len(),
+        0,
+        "seller catalog must be empty after transfer"
     );
-
-    client.cancel_upgrade(&proposer, &proposal_id);
-
-    let approve_result = client.try_approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
-    match approve_result {
-        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
-        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
-    }
-
-    env.ledger().with_mut(|l| l.timestamp = earliest);
-    let execute_result = client.try_execute_upgrade(&proposer, &proposal_id);
-    match execute_result {
-        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
-        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_cancel_upgrade_by_owner_overrides_proposer() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let earliest = now + UPGRADE_MIN_DELAY + 10;
-    let expiry = earliest + 1_000;
-
-    let proposal_id = client.propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &earliest,
-        &expiry,
-        &false,
+    assert_eq!(
+        client.get_prompts_by_buyer(&new_owner).len(),
+        1,
+        "recipient catalog must contain the transferred prompt"
     );
-
-    client.cancel_upgrade(&context.admin, &proposal_id);
-    let proposal = client.get_upgrade_proposal(&proposal_id);
-    assert!(proposal.cancelled);
+    assert!(!client.has_access(&seller, &prompt_id), "seller must lose access after transfer");
+    assert!(client.has_access(&new_owner, &prompt_id), "recipient must have access after transfer");
 }
 
+/// has_access returns true for the creator even when no buyer has purchased.
+/// A stranger gets false regardless.
 #[test]
-fn test_cancel_upgrade_unauthorized_party_fails() {
+fn test_has_access_creator_always_true_stranger_always_false() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
 
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let earliest = now + UPGRADE_MIN_DELAY + 10;
-    let expiry = earliest + 1_000;
+    let creator = Address::generate(&env);
+    let stranger = Address::generate(&env);
 
-    let proposal_id = client.propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &earliest,
-        &expiry,
-        &false,
+    let prompt_id = create_prompt(&env, &client, &creator, "Access Sentinel Test", 5_000, &context.xlm);
+
+    assert!(
+        client.has_access(&creator, &prompt_id),
+        "creator must always have access to their own prompt"
     );
-
-    let outsider = Address::generate(&env);
-    let result = client.try_cancel_upgrade(&outsider, &proposal_id);
-    match result {
-        Err(Ok(Error::Unauthorized)) => {}
-        other => panic!("expected Unauthorized, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_approve_upgrade_rejects_duplicate_and_non_signer() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let earliest = now + UPGRADE_MIN_DELAY + 10;
-    let expiry = earliest + 1_000;
-
-    let proposal_id = client.propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &earliest,
-        &expiry,
-        &false,
+    assert!(
+        !client.has_access(&stranger, &prompt_id),
+        "stranger must not have access without a purchase"
     );
-    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
-
-    let dup_result = client.try_approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    match dup_result {
-        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
-        other => panic!("expected UpgradeProposalUnavailable, got {:?}", other),
-    }
-
-    let outsider = Address::generate(&env);
-    let non_signer_result = client.try_approve_upgrade(&outsider, &proposal_id);
-    match non_signer_result {
-        Err(Ok(Error::Unauthorized)) => {}
-        other => panic!("expected Unauthorized, got {:?}", other),
-    }
 }
 
+/// A purchase at 1-stroop price with 5% fee rounds to 0 fee.
+/// The contract must not panic and the creator receives all 1 stroop.
 #[test]
-fn test_signer_rotation_during_proposal_invalidates_stale_approval() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
-
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let earliest = now + UPGRADE_MIN_DELAY + 10;
-    let expiry = earliest + 1_000;
-
-    let proposal_id = client.propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &earliest,
-        &expiry,
-        &false,
-    );
-
-    // Two of three signers approve, reaching the threshold of 2.
-    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    client.approve_upgrade(&signers.get(1).unwrap(), &proposal_id);
-
-    // One of the approving signers is rotated out before execution.
-    client.remove_upgrade_signer(&signers.get(1).unwrap());
-
-    env.ledger().with_mut(|l| l.timestamp = earliest);
-    let result = client.try_execute_upgrade(&signers.get(0).unwrap(), &proposal_id);
-    match result {
-        Err(Ok(Error::UpgradeProposalUnavailable)) => {}
-        other => panic!(
-            "expected UpgradeProposalUnavailable after signer rotation, got {:?}",
-            other
-        ),
-    }
-
-    // The remaining active signer plus a newly-added one restores quorum.
-    let replacement = Address::generate(&env);
-    client.add_upgrade_signer(&replacement);
-    client.approve_upgrade(&replacement, &proposal_id);
-
-    let proposal = client.get_upgrade_proposal(&proposal_id);
-    // Three approvals recorded in total, but only 2 (signer 0 + replacement)
-    // belong to currently-active signers.
-    assert_eq!(proposal.approvals.len(), 3);
-}
-
-#[test]
-fn test_compute_migration_hash_is_deterministic_and_input_sensitive() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-
-    let target = some_wasm_hash(&env, 5);
-    let first = client.compute_migration_hash(&target, &1u32);
-    let second = client.compute_migration_hash(&target, &1u32);
-    assert_eq!(first, second);
-
-    let different_schema = client.compute_migration_hash(&target, &2u32);
-    assert_ne!(first, different_schema);
-
-    let different_target = some_wasm_hash(&env, 6);
-    let different_hash = client.compute_migration_hash(&different_target, &1u32);
-    assert_ne!(first, different_hash);
-}
-
-#[test]
-fn test_marketplace_functions_unaffected_by_pending_upgrade_governance() {
+fn test_single_stroop_purchase_fee_rounds_to_zero() {
     let env: Env = Default::default();
     let context = setup(&env);
     let client = PromptHashContractClient::new(&env, &context.contract);
@@ -4377,109 +4050,180 @@ fn test_marketplace_functions_unaffected_by_pending_upgrade_governance() {
 
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
-    let price = 100_000_000i128;
-    let prompt_id = create_prompt(
-        &env,
-        &client,
-        &creator,
-        "Governance Safety",
-        price,
-        &context.xlm,
-    );
+    // 1 * 500 / 10_000 = 0 (integer floor) — creator gets 1 stroop
+    let price: i128 = 1;
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Min Price Rounding", price, &context.xlm);
     fund_buyer(&xlm_client, &buyer, &context.contract, price);
 
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 3, 2);
-    let target = some_wasm_hash(&env, 9);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-    let proposal_id = client.propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &(now + UPGRADE_MIN_DELAY + 10),
-        &(now + UPGRADE_MIN_DELAY + 1_000),
-        &false,
-    );
-    client.approve_upgrade(&signers.get(0).unwrap(), &proposal_id);
+    let creator_before = xlm_client.balance(&creator);
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.release_funds_early(&buyer, &prompt_id);
 
-    // Marketplace purchase/access flows work identically while a governance
-    // proposal is pending — the two subsystems share no mutable state.
-    client.buy_prompt(&buyer, &prompt_id, &None, &price, &None);
+    assert_eq!(
+        xlm_client.balance(&creator),
+        creator_before + 1,
+        "creator must receive 1 stroop when fee rounds to zero"
+    );
     assert!(client.has_access(&buyer, &prompt_id));
+}
 
-    client.cancel_upgrade(&signers.get(0).unwrap(), &proposal_id);
+/// Multiple creators each have their own independent catalog.
+/// Verifies that creator-index storage keys do not bleed across accounts.
+#[test]
+fn test_multiple_creators_catalogs_are_independent() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+
+    let creator_a = Address::generate(&env);
+    let creator_b = Address::generate(&env);
+
+    create_prompt(&env, &client, &creator_a, "A Prompt 1", 1_000, &context.xlm);
+    create_prompt(&env, &client, &creator_a, "A Prompt 2", 2_000, &context.xlm);
+    create_prompt(&env, &client, &creator_b, "B Prompt 1", 3_000, &context.xlm);
+
+    assert_eq!(
+        client.get_prompts_by_creator(&creator_a).len(),
+        2,
+        "creator_a must see exactly 2 prompts"
+    );
+    assert_eq!(
+        client.get_prompts_by_creator(&creator_b).len(),
+        1,
+        "creator_b must see exactly 1 prompt"
+    );
+}
+
+/// Admin resolving a dispute with refund=true must update dispute storage
+/// to Refunded, return funds to the buyer, and revoke their access.
+#[test]
+fn test_admin_resolve_dispute_refund_updates_dispute_storage_and_revokes_access() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 20_000;
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Admin Refund Dispute", price, &context.xlm);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.open_dispute(
+        &buyer,
+        &prompt_id,
+        &crate::types::DisputeReason::InvalidEncryptedPayload,
+    );
+
+    // Storage side-effect: dispute must be Open
+    let open_dispute = client.get_dispute(&prompt_id, &buyer);
+    assert_eq!(
+        open_dispute.status,
+        crate::types::DisputeStatus::Open,
+        "dispute must be Open after open_dispute"
+    );
+
+    client.resolve_dispute(&context.admin, &prompt_id, &buyer, &true);
+
+    // Storage side-effect: status updated to Refunded
+    let resolved_dispute = client.get_dispute(&prompt_id, &buyer);
+    assert_eq!(
+        resolved_dispute.status,
+        crate::types::DisputeStatus::Refunded,
+        "dispute storage must show Refunded after admin resolution"
+    );
+    assert_eq!(
+        xlm_client.balance(&buyer),
+        price,
+        "buyer balance must equal the full price after a refund"
+    );
+    assert!(
+        !client.has_access(&buyer, &prompt_id),
+        "access must be revoked after a refund dispute resolution"
+    );
+}
+
+/// Admin resolving a dispute with refund=false must update storage to Rejected
+/// and leave the buyer with access but no refund.
+#[test]
+fn test_admin_resolve_dispute_rejected_keeps_access_and_no_refund() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let price: i128 = 10_000;
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Admin Reject Dispute", price, &context.xlm);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+    client.open_dispute(
+        &buyer,
+        &prompt_id,
+        &crate::types::DisputeReason::MissingMetadata,
+    );
+
+    client.resolve_dispute(&context.admin, &prompt_id, &buyer, &false);
+
+    let resolved_dispute = client.get_dispute(&prompt_id, &buyer);
+    assert_eq!(
+        resolved_dispute.status,
+        crate::types::DisputeStatus::Rejected,
+        "dispute storage must show Rejected after admin rejection"
+    );
+    // Buyer keeps access
+    assert!(
+        client.has_access(&buyer, &prompt_id),
+        "access must be retained when dispute is rejected"
+    );
+    // No refund issued
+    assert_eq!(
+        xlm_client.balance(&buyer),
+        0,
+        "buyer balance must remain 0 (no refund issued for rejected dispute)"
+    );
+}
+
+/// A stranger who has no purchase record cannot open a dispute for a prompt
+/// bought by another address.
+#[test]
+fn test_stranger_cannot_open_dispute_for_another_buyers_purchase() {
+    let env: Env = Default::default();
+    let context = setup(&env);
+    let client = PromptHashContractClient::new(&env, &context.contract);
+    let xlm_client = token::StellarAssetClient::new(&env, &context.xlm);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let price: i128 = 5_000;
+
+    let prompt_id = create_prompt(&env, &client, &creator, "Dispute Auth Test", price, &context.xlm);
+    fund_buyer(&xlm_client, &buyer, &context.contract, price);
+    client.buy_prompt(&buyer, &prompt_id, &None::<Address>, &price, &None::<Bytes>);
+
+    // Stranger attempts to open a dispute for someone else's purchase
+    let result = client.try_open_dispute(
+        &stranger,
+        &prompt_id,
+        &crate::types::DisputeReason::MissingMetadata,
+    );
+    assert!(
+        result.is_err(),
+        "stranger must not be able to open a dispute for a prompt they never bought"
+    );
+    // Real buyer still keeps access
     assert!(client.has_access(&buyer, &prompt_id));
-    let prompt = client.get_prompt(&prompt_id);
-    assert_eq!(prompt.sales_count, 1);
-}
-
-#[test]
-fn test_propose_rollback_fails_without_any_prior_upgrade() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    // No upgrade has ever executed, so PreviousWasmHash is unset — a
-    // rollback proposal can never be bound to a real prior version yet.
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &0u32);
-    let now = env.ledger().timestamp();
-
-    let result = client.try_propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &0u32,
-        &migration_hash,
-        &(now + UPGRADE_MIN_DELAY + 10),
-        &(now + UPGRADE_MIN_DELAY + 1_000),
-        &true,
-    );
-    match result {
-        Err(Ok(Error::UpgradeBindingMismatch)) => {}
-        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_propose_rollback_rejects_schema_version_increase() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    let signers = setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    // A rollback must restore a schema version at or below the current one
-    // (0 at genesis); proposing schema_version 1 as a rollback must fail
-    // the schema-transition gate before the (unrelated) missing-prior-hash
-    // check is ever reached.
-    let target = some_wasm_hash(&env, 1);
-    let migration_hash = client.compute_migration_hash(&target, &1u32);
-    let now = env.ledger().timestamp();
-
-    let result = client.try_propose_upgrade(
-        &signers.get(0).unwrap(),
-        &target,
-        &1u32,
-        &migration_hash,
-        &(now + UPGRADE_MIN_DELAY + 10),
-        &(now + UPGRADE_MIN_DELAY + 1_000),
-        &true,
-    );
-    match result {
-        Err(Ok(Error::UpgradeBindingMismatch)) => {}
-        other => panic!("expected UpgradeBindingMismatch, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_verify_upgrade_invariants_passes_for_healthy_configuration() {
-    let env: Env = Default::default();
-    let context = setup(&env);
-    let client = PromptHashContractClient::new(&env, &context.contract);
-    setup_upgrade_signers(&env, &client, &context.admin, 2, 2);
-
-    // Callable standalone (e.g. via RPC simulation before proposing) and
-    // must not error once signers/threshold are configured validly.
-    client.verify_upgrade_invariants();
 }

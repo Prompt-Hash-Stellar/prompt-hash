@@ -1,3 +1,4 @@
+import React from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
@@ -20,8 +21,9 @@ import type { PromptRecord } from "@/lib/stellar/promptHashClient";
 import { StarRating } from "@/components/prompts/StarRating";
 import { useQuery } from "@tanstack/react-query";
 import { ReviewClient } from "@/lib/reviews/reviewClient";
+import { OptimizedImage } from "@/components/ui/OptimizedImage";
 
-export const PromptCard = ({
+export const PromptCard = React.memo(function PromptCard({
   prompt,
   hasAccess,
   openModal,
@@ -78,11 +80,14 @@ export const PromptCard = ({
         aria-label={`Open ${prompt.title}`}
       >
         {/* Visual Header */}
-        <div className="relative aspect-[16/10] overflow-hidden">
-          <img
-            src={prompt.imageUrl || "/images/codeguru.png"}
+        <div className="relative">
+          <OptimizedImage
+            src={prompt.imageUrl}
             alt={prompt.title}
-            className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
+            aspectRatio="16/10"
+            loading="lazy"
+            className="transition-transform duration-700 group-hover:scale-110"
+            wrapperClassName="w-full"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-[#020617] via-transparent to-transparent opacity-60" />
 
@@ -278,4 +283,4 @@ export const PromptCard = ({
       </Card>
     </motion.div>
   );
-};
+});

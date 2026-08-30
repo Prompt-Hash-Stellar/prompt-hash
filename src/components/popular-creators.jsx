@@ -1,6 +1,7 @@
 import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
+import { OptimizedImage } from "./ui/OptimizedImage";
 
 const creators = [
   {
@@ -53,11 +54,18 @@ export function PopularCreators() {
             >
               <CardContent className="p-6">
                 <div className="flex items-center gap-4">
-                  <img
-                    src={creator.image || "/placeholder.svg"}
-                    alt={creator.name}
-                    className="w-16 h-16 rounded-full object-cover border-2 border-purple-500"
-                  />
+                  <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-purple-500 shrink-0">
+                    <OptimizedImage
+                      src={creator.image}
+                      alt={creator.name}
+                      width={64}
+                      height={64}
+                      loading="lazy"
+                      aspectRatio="1"
+                      wrapperClassName="w-full h-full"
+                      className="object-cover"
+                    />
+                  </div>
                   <div>
                     <h3 className="font-semibold text-white">{creator.name}</h3>
                     <p className="text-sm text-gray-400">
