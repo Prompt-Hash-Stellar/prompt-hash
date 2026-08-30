@@ -23,6 +23,7 @@ import { stellarNetwork } from "@/lib/env";
 import { usePageMeta } from "@/lib/seo/usePageMeta";
 
 
+import { validatePayoutAddress } from "@/util/wallet";
 
 export default function PayoutSettingsPage() {
   usePageMeta({
@@ -78,6 +79,14 @@ export default function PayoutSettingsPage() {
 
     try {
       const targetAddress = payoutAddress.trim() || address;
+
+      // Validate destination before prompting for a signature
+      const validation = await validatePayoutAddress(targetAddress);
+      if (!validation.valid) {
+        setSaveError(validation.error || "Invalid payout address.");
+        setSaving(false);
+        return;
+      }
       const timestamp = Date.now();
       const messageToSign = `prompt-hash:update-payout:${targetAddress}:${timestamp}`;
       

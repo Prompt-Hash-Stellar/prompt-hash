@@ -42,3 +42,8 @@ if (typeof window !== 'undefined') {
     })),
   });
 }
+
+// Fallback to prevent background timers in wallet libraries from crashing during JSDOM teardown
+if (typeof (globalThis as any).window === 'undefined') {
+  (globalThis as any).window = globalThis;
+}
