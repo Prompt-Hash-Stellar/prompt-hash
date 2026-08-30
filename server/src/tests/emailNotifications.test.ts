@@ -21,6 +21,10 @@ import {
   getBatchNotificationStatus,
   setTransport,
   closeTransport,
+  escapeHtml,
+  sanitizeForSubject,
+  getAppOrigin,
+  buildPromptUrl,
   PurchasePayload,
   UpdatePayload,
 } from "../services/emailNotifications";
@@ -553,6 +557,118 @@ describe("emailNotifications", () => {
       expect(result.failed).toBe(1);
       expect(job.status).toBe("pending");
       expect(job.lastError).toContain("SMTP send mail timed out after 50ms");
+    });
+  });
+
+  // 8. HTML Escaping & Safe Link Construction (#168)
+  describe("HTML Escaping & Safe Link Construction", () => {
+    it("escapes HTML-significant characters and strips line breaks", () => {
+      expect(escapeHtml(`<script>alert('xss')</script>`)).toBe(
+        "&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;"
+      );
+      expect(escapeHtml(`"onmouseover="alert(1)`)).toBe("&quot;onmouseover=&quot;alert(1)");
+      expect(escapeHtml("line1\r\nline2\rline3\nline4")).toBe("line1 line2 line3 line4");
+      expect(escapeHtml("Écrire un café ☕ prompt")).toBe("Écrire un café ☕ prompt");
+    });
+
+    it("strips CR/LF from subject values without HTML-encoding other characters", () => {
+      expect(sanitizeForSubject("Injected\r\nBcc: attacker@evil.com")).toBe(
+        "Injected Bcc: attacker@evil.com"
+      );
+      expect(sanitizeForSubject("  Normal Title  ")).toBe("Normal Title");
+    });
+
+    it("returns the default origin when APP_URL is unset, malformed, or not HTTPS", () => {
+      const original = process.env.APP_URL;
+      try {
+        delete process.env.APP_URL;
+        expect(getAppOrigin()).toBe("https://prompthash.io");
+
+        process.env.APP_URL = "not a url";
+        expect(getAppOrigin()).toBe("https://prompthash.io");
+
+        process.env.APP_URL = "javascript:alert(1)";
+        expect(getAppOrigin()).toBe("https://prompthash.io");
+
+        process.env.APP_URL = "http://attacker.example";
+        expect(getAppOrigin()).toBe("https://prompthash.io");
+
+        process.env.APP_URL = "https://app.prompthash.io";
+        expect(getAppOrigin()).toBe("https://app.prompthash.io");
+      } finally {
+        if (original === undefined) delete process.env.APP_URL;
+        else process.env.APP_URL = original;
+      }
+    });
+
+    it("URL-encodes the prompt id when building a prompt link", () => {
+      const original = process.env.APP_URL;
+      try {
+        process.env.APP_URL = "https://app.prompthash.io";
+        expect(buildPromptUrl("prompt/../../evil?x=1")).toBe(
+          "https://app.prompthash.io/prompts/prompt%2F..%2F..%2Fevil%3Fx%3D1"
+        );
+      } finally {
+        if (original === undefined) delete process.env.APP_URL;
+        else process.env.APP_URL = original;
+      }
+    });
+
+    it("sends escaped HTML and a plain-text alternative for a malicious purchase payload", async () => {
+      userStore.set("seller_xss", {
+        walletAddress: "seller_xss",
+        email: "seller_xss@example.com",
+      });
+
+      const maliciousPayload: PurchasePayload = {
+        buyerWallet: `<img src=x onerror=alert(1)>abcdefgh`,
+        promptTitle: `Evil"><script>alert('title')</script>`,
+        promptId: `p1"><img src=x onerror=alert(2)>`,
+        txHash: `tx"><script>alert('hash')</script>`,
+      };
+
+      await notifyPromptPurchased("seller_xss", maliciousPayload, {
+        idempotencyKey: "PromptPurchased:seller_xss:xss",
+      });
+
+      expect(mockSendMail).toHaveBeenCalledTimes(1);
+      const sentMail = mockSendMail.mock.calls[0][0];
+
+      expect(sentMail.html).not.toContain("<script>");
+      expect(sentMail.html).not.toContain("onerror=alert");
+      expect(sentMail.html).toContain("&lt;script&gt;");
+      expect(typeof sentMail.text).toBe("string");
+      expect(sentMail.text.length).toBeGreaterThan(0);
+      expect(sentMail.subject).not.toMatch(/[\r\n]/);
+    });
+
+    it("sends escaped HTML and a plain-text alternative for a malicious update payload", async () => {
+      const maliciousBuyers = ["buyer_xss_1"];
+      userStore.set("buyer_xss_1", {
+        walletAddress: "buyer_xss_1",
+        email: "buyer_xss_1@example.com",
+      });
+
+      const maliciousPayload: UpdatePayload = {
+        ownerWallet: "creator_xss",
+        promptTitle: `<b>Bold</b> & "quoted" title\r\nInjected-Header: evil`,
+        promptId: "prompt-xss",
+        versionIndex: 0,
+      };
+
+      await notifyPromptUpdated(maliciousBuyers, maliciousPayload, {
+        idempotencyKeyPrefix: "PromptUpdated:xss",
+      });
+
+      expect(mockSendMail).toHaveBeenCalledTimes(1);
+      const sentMail = mockSendMail.mock.calls[0][0];
+
+      expect(sentMail.html).not.toContain("<b>Bold</b>");
+      expect(sentMail.html).toContain("&lt;b&gt;");
+      expect(sentMail.html).toContain("&amp;");
+      expect(sentMail.html).toContain("&quot;quoted&quot;");
+      expect(sentMail.subject).not.toMatch(/[\r\n]/);
+      expect(typeof sentMail.text).toBe("string");
     });
   });
 });
