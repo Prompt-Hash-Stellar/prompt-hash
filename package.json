@@ -26,7 +26,7 @@
     "check:setup": "node scripts/check-local-setup.mjs"
   },
   "dependencies": {
-    "@creit.tech/stellar-wallets-kit": "^1.9.5",
+    "@creit.tech/stellar-wallets-kit": "^2.6.0",
     "@hookform/resolvers": "^5.4.0",
     "@jadonamite/automata-sdk": "^1.0.1",
     "@radix-ui/react-avatar": "^1.2.1",
@@ -40,9 +40,9 @@
     "@radix-ui/react-tooltip": "^1.2.11",
     "@sentry/react": "^10.62.0",
     "@sentry/vite-plugin": "^5.3.0",
-    "@stellar/design-system": "^3.2.8",
-    "@stellar/stellar-base": "^14.0.2",
-    "@stellar/stellar-sdk": "^14.6.1",
+    "@stellar/design-system": "^4.0.2",
+    "@stellar/stellar-base": "^15.0.0",
+    "@stellar/stellar-sdk": "^17.0.1",
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/react-query": "^5.99.2",
     "boring-avatars": "^2.0.4",
@@ -119,6 +119,6 @@
     "marketplace"
   ],
   "resolutions": {
-    "@stellar/stellar-sdk": "14.6.1"
+    "@stellar/stellar-sdk": "17.0.1"
   }
 }
