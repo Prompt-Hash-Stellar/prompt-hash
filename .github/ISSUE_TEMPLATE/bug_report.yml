@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a bug in the frontend, API, or Soroban contracts.
+labels:
+  - bug
+title: "[Bug] <short imperative summary>"
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What went wrong?
+      description: Describe the observed behaviour, one or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps so a maintainer can hit the same failure.
+      placeholder: |
+        1. Open http://localhost:3000/prompts
+        2. Start a new listing and type into the title
+        3. Save, then edit the title again
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected area
+      options:
+        - Frontend / UI
+        - API / Server
+        - Contracts / Chain logic
+        - Documentation / Tooling
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Network, browser, and any version that matters.
+      placeholder: testnet, Chrome 127, contract build <commit-sha>
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste the relevant console output, API response, or attach a screenshot.

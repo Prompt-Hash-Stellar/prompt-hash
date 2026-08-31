@@ -1,0 +1,107 @@
+name: Hard contributor task (GrantFox)
+description: Use for high-effort work that needs a design note, focused tests, and maintainer review.
+labels:
+  - "help wanted"
+  - "hard task"
+title: "[<domain>] <short imperative summary>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before you start, paste a short design note in the comments of this issue (the
+        repository's review checklist walks maintainers through what to expect).
+        See `docs/contributor-guide.md` for the domain verification rubric and
+        `docs/contributing.md` for local setup.
+
+  - type: input
+    id: domain
+    attributes:
+      label: Domain
+      description: "Pick the rubric section in `docs/contributor-guide.md` that applies."
+      placeholder: "e.g. Frontend / UI, API / Server, Contracts / Chain logic"
+    validations:
+      required: true
+
+  - type: input
+    id: reward
+    attributes:
+      label: Reward review requirement
+      description: State what a reward reviewer needs to see before this task is considered complete.
+      placeholder: "e.g. Two-tab stale-save test passing plus a screenshot of the conflict dialog"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is broken, missing, or unusable, and for whom?
+      placeholder: Describe the problem in one or two sentences, then add supporting context below.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Bulleted list of the changes this task covers.
+      placeholder: |
+        - Add revision tokens to draft saves
+        - Detect stale writes
+        - Provide conflict resolution UI
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: One checkbox per observable outcome.
+      placeholder: |
+        - [ ] Older tab cannot silently overwrite a newer draft
+        - [ ] Creator can recover or merge conflicting changes
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test expectations
+      description: Name the test files or suites that must prove the change works.
+      placeholder: "src/test/draft-conflict.test.tsx covers two-tab editing and stale save"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshot / log expectations
+      description: Attach screenshots, recordings, or log excerpts that show the change in action.
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security review notes
+      description: |
+        Note anything privacy- or security-relevant: secrets, PII, transaction signing,
+        token handling, or new surfaces reachable by unauthenticated callers.
+        See `docs/security-model.md`.
+
+  - type: textarea
+    id: areas
+    attributes:
+      label: Relevant areas
+      description: Files, directories, or API routes touched by this task.
+      placeholder: "src/pages/sell, src/util/storage.ts"
+
+  - type: dropdown
+    id: complexity
+    attributes:
+      label: Complexity
+      options:
+        - Low
+        - Medium
+        - High - 200 points
+        - Extreme
+    validations:
+      required: true
