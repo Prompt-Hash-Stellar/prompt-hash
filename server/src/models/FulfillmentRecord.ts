@@ -57,6 +57,8 @@ const fulfillmentSchema = new mongoose.Schema(
         status: String,
         note: String,
         at: { type: Date, default: Date.now },
+        actor: { type: String, default: "" },
+        actorRole: { type: String, default: "" },
       },
     ],
   },
