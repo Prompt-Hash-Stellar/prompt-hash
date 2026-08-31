@@ -10,6 +10,7 @@ Table of contents
 - Run the app & contracts
 - Project structure overview
 - Testing
+- Contributor guide & issue templates
 - How to contribute (PRs, style, tests)
 
 ---
@@ -199,7 +200,20 @@ When opening a PR:
 
 ---
 
-## 9) Need help?
+## 9) Contributor guide & issue templates
+
+- **Before opening a hard task issue**, use the template at
+  `.github/ISSUE_TEMPLATE/hard-issue.yml`. It forces you to state the problem,
+  scope, acceptance criteria, test expectations, and the rubric domain, so a
+  reviewer knows exactly what to check.
+- **Domain verification rubric and maintainer review checklist** live in
+  `docs/contributor-guide.md`. The rubric is what a reward reviewer uses to
+  decide whether a task is complete.
+- The checklist is enforced by `node scripts/check-issue-templates.mjs`, which
+  runs in CI and fails if a referenced template path stops existing.
+- Bug reports use `.github/ISSUE_TEMPLATE/bug_report.yml`.
+
+## 10) Need help?
 
 - Open an issue with the `help wanted` label.
 - Join the project discussions or ping maintainers in the issue/PR.

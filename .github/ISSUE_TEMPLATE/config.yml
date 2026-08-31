@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability report
+    url: https://github.com/Prompt-Hash-Stellar/prompt-hash/security/advisories/new
+    about: Report a security issue privately. Do not open a public issue with exploit details.
