@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "eventType": "unlock",
+  "description": "V2 contract unlock event with explicit schema version, request_id, and client session metadata",
+  "rawEvent": {
+    "topic": ["PromptUnlocked", "1", "v2"],
+    "value": {
+      "schema_version": 2,
+      "prompt_id": 1,
+      "buyer": "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI",
+      "timestamp": 1717000100,
+      "request_id": "req_unlock_9901",
+      "client_session": "sess_client_a99"
+    },
+    "ledger": 10006,
+    "transaction": "f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef0102030405",
+    "eventIndex": 0
+  },
+  "expectedCanonical": {
+    "eventType": "unlock",
+    "version": 2,
+    "promptId": "1",
+    "buyer": "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI",
+    "timestamp": 1717000100,
+    "requestId": "req_unlock_9901",
+    "clientSession": "sess_client_a99"
+  }
+}

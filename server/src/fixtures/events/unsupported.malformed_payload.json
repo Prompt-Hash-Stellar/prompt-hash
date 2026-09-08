@@ -1,0 +1,17 @@
+{
+  "description": "Event with recognized topic and version but missing mandatory fields or invalid types",
+  "rawEvent": {
+    "topic": ["PromptCreated", "1"],
+    "value": {
+      "prompt_id": 1,
+      "price_stroops": -500
+    },
+    "ledger": 10009,
+    "transaction": "3344556677889900aabbccddeeff11223344556677889900aabbccddeeff1122",
+    "eventIndex": 0
+  },
+  "expectedDeadLetter": {
+    "reason": "SCHEMA_VALIDATION_FAILED",
+    "recoverable": false
+  }
+}

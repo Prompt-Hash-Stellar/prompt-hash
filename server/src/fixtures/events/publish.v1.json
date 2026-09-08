@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "eventType": "publish",
+  "description": "V1 legacy contract publish event (PromptCreated) without metadata fields",
+  "rawEvent": {
+    "topic": ["PromptCreated", "1"],
+    "value": {
+      "prompt_id": 1,
+      "creator": "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3IFOKIJWVSYY",
+      "price_stroops": 10000000,
+      "asset": "CB64D3G7SM2RTH6JSGG34DDTRHQAU2ZM4HI7J3AWGFFQ2SXZHOQUJZTM"
+    },
+    "ledger": 10001,
+    "transaction": "a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef",
+    "eventIndex": 0
+  },
+  "expectedCanonical": {
+    "eventType": "publish",
+    "version": 1,
+    "promptId": "1",
+    "creator": "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3IFOKIJWVSYY",
+    "priceStroops": "10000000",
+    "priceXlm": 1.0,
+    "asset": "CB64D3G7SM2RTH6JSGG34DDTRHQAU2ZM4HI7J3AWGFFQ2SXZHOQUJZTM",
+    "title": null,
+    "category": null,
+    "metadataUri": null,
+    "contentHash": null
+  }
+}

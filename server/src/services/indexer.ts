@@ -8,6 +8,8 @@ import { enqueueSimilarityScan, startSimilarityWorker } from "./similarityJobQue
 import { indexPromptProjection } from "./promptSearchIndex";
 import { stellarConfig } from "../config/stellar";
 import { cacheDel, cacheDelPattern, CACHE_KEYS } from "./cacheService";
+import { decodeContractEvent } from "./eventDecoder";
+import { DeadLetterQueueService } from "./deadLetterQueue";
 
 const CONTRACT_ID = stellarConfig.PUBLIC_PROMPT_HASH_CONTRACT_ID;
 const rpc = new Server(stellarConfig.PUBLIC_STELLAR_RPC_URL);
@@ -61,8 +63,7 @@ export async function startIndexer() {
 /**
  * Decodes and routes Soroban events to the appropriate database action.
  */
-async function processEvent(event: any) {
-  // Decode the topic and value from XDR to Native JS types
+export async function processEvent(event: any) {
   const topic = scValToNative(event.topic[0]);
   const data = scValToNative(event.value);
 
@@ -70,41 +71,52 @@ async function processEvent(event: any) {
 
   switch (topic) {
     case "PromptCreated": {
-      const { prompt_id, creator, price_stroops } = data;
+      const decodeResult = decodeContractEvent({
+        topic: [topic],
+        value: data,
+        ledger: event.ledger,
+        transaction: event.txHash ?? event.transaction,
+        eventIndex: event.eventIndex,
+      });
 
-      // Ensure the creator exists in our User collection
-      let user = await User.findOne({ walletAddress: creator.toLowerCase() });
+      if (!decodeResult.success) {
+        await DeadLetterQueueService.routeToDeadLetter(decodeResult.deadLetter);
+        console.warn(`[indexer] Quarantined invalid PromptCreated event: ${decodeResult.deadLetter.reason}`);
+        return;
+      }
+
+      const decoded = decodeResult.event;
+      if (decoded.eventType !== "publish") return;
+
+      let user = await User.findOne({ walletAddress: decoded.creator.toLowerCase() });
       if (!user) {
         user = await User.create({
-          walletAddress: creator.toLowerCase(),
-          username: `user_${creator.slice(0, 6)}`,
+          walletAddress: decoded.creator.toLowerCase(),
+          username: `user_${decoded.creator.slice(0, 6)}`,
           rating: 4,
         });
       }
 
-      // handles discovery of prompts created off-platform
       const upserted = await Prompt.findOneAndUpdate(
-        { onChainId: prompt_id.toString() },
+        { onChainId: decoded.promptId },
         {
           $set: {
-            onChainId: prompt_id.toString(),
+            onChainId: decoded.promptId,
             owner: user._id,
-            price: Number(price_stroops) / 10_000_000,
+            price: decoded.priceXlm,
             isActive: true,
           },
         },
         { upsert: true, new: true },
       );
 
-      await indexPromptProjection(upserted, creator, Number(event.ledger || 0));
+      await indexPromptProjection(upserted, decoded.creator, Number(event.ledger || 0));
 
-      // Enqueue similarity scan job (non-blocking, processed by worker)
-      // New prompts without fingerprints will have them generated on first scan
       if (upserted?.content) {
-        enqueueSimilarityScan(prompt_id.toString()).catch((err) =>
+        enqueueSimilarityScan(decoded.promptId).catch((err) =>
           console.error(
             "[similarity-queue] Failed to enqueue scan for prompt",
-            prompt_id.toString(),
+            decoded.promptId,
             err,
           ),
         );
@@ -113,24 +125,58 @@ async function processEvent(event: any) {
     }
 
     case "PromptPurchased": {
-      const { prompt_id, buyer, tx_hash, version_index } = data;
+      const decodeResult = decodeContractEvent({
+        topic: [topic],
+        value: data,
+        ledger: event.ledger,
+        transaction: event.txHash ?? event.transaction,
+        eventIndex: event.eventIndex,
+      });
+
+      if (!decodeResult.success) {
+        await DeadLetterQueueService.routeToDeadLetter(decodeResult.deadLetter);
+        console.warn(`[indexer] Quarantined invalid PromptPurchased event: ${decodeResult.deadLetter.reason}`);
+        return;
+      }
+
+      const decoded = decodeResult.event;
+      if (decoded.eventType !== "purchase") return;
+
       await Prompt.findOneAndUpdate(
-        { onChainId: prompt_id.toString() },
+        { onChainId: decoded.promptId },
         { $inc: { salesCount: 1 } },
       );
-      if (buyer) {
+
+      if (decoded.buyer) {
         await Purchase.findOneAndUpdate(
-          { promptId: prompt_id.toString(), buyerWallet: String(buyer).toLowerCase() },
+          { promptId: decoded.promptId, buyerWallet: decoded.buyer.toLowerCase() },
           {
             $set: {
-              promptId: prompt_id.toString(),
-              buyerWallet: String(buyer).toLowerCase(),
-              versionIndex: version_index ?? 1,
-              txHash: tx_hash ?? event.txHash ?? "",
+              promptId: decoded.promptId,
+              buyerWallet: decoded.buyer.toLowerCase(),
+              versionIndex: decoded.versionIndex,
+              txHash: decoded.txHash ?? "",
             },
           },
-          { upsert: true }
+          { upsert: true },
         );
+      }
+      break;
+    }
+
+    case "PromptUnlocked": {
+      const decodeResult = decodeContractEvent({
+        topic: [topic],
+        value: data,
+        ledger: event.ledger,
+        transaction: event.txHash ?? event.transaction,
+        eventIndex: event.eventIndex,
+      });
+
+      if (!decodeResult.success) {
+        await DeadLetterQueueService.routeToDeadLetter(decodeResult.deadLetter);
+        console.warn(`[indexer] Quarantined invalid PromptUnlocked event: ${decodeResult.deadLetter.reason}`);
+        return;
       }
       break;
     }

@@ -1,0 +1,19 @@
+{
+  "description": "Event with an unsupported or unreleased schema version (v99) that consumers cannot safely decode",
+  "rawEvent": {
+    "topic": ["PromptCreated", "1", "v99"],
+    "value": {
+      "schema_version": 99,
+      "prompt_id": 1,
+      "future_field": "unsupported_data"
+    },
+    "ledger": 10008,
+    "transaction": "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+    "eventIndex": 0
+  },
+  "expectedDeadLetter": {
+    "reason": "UNSUPPORTED_VERSION",
+    "detectedVersion": "99",
+    "recoverable": true
+  }
+}

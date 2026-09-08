@@ -492,6 +492,15 @@ impl PromptHashTrait for PromptHashContract {
         }
     }
 
+    fn unlock_prompt(env: Env, buyer: Address, prompt_id: u64) -> Result<(), Error> {
+        buyer.require_auth();
+        if !Self::has_access(env.clone(), buyer.clone(), prompt_id)? {
+            return Err(Error::Unauthorized);
+        }
+        Events::emit_prompt_unlocked(&env, prompt_id, buyer, env.ledger().timestamp());
+        Ok(())
+    }
+
     fn get_prompt(env: Env, prompt_id: u64) -> Result<Prompt, Error> {
         Storage::require_prompt(&env, prompt_id)
     }

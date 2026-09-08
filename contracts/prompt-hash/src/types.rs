@@ -508,6 +508,7 @@ pub trait PromptHashTrait {
     ) -> Result<(), Error>;
 
     fn has_access(env: Env, user: Address, prompt_id: u64) -> Result<bool, Error>;
+    fn unlock_prompt(env: Env, buyer: Address, prompt_id: u64) -> Result<(), Error>;
     fn get_prompt(env: Env, prompt_id: u64) -> Result<Prompt, Error>;
 
     /// Cursor-paginated listing of currently-active prompts. `cursor` is the
