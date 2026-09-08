@@ -195,11 +195,11 @@ export default function PromptDetailPage() {
                 <h1 className="text-2xl font-bold tracking-tight text-white">
                   {prompt.title}
                 </h1>
-                <p className="mt-2 text-sm leading-6 text-slate-400">
+                <p className="mt-2 text-sm leading-6 text-slate-400 break-words [overflow-wrap:anywhere]">
                   {prompt.previewText}
                 </p>
                 {prompt.description && (
-                  <div className="mt-4">
+                  <div className="mt-4 overflow-hidden">
                     <MarkdownContent>{prompt.description}</MarkdownContent>
                   </div>
                 )}

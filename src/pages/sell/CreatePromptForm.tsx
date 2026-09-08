@@ -554,9 +554,9 @@ export function CreatePromptForm({ onCreated }: CreatePromptFormProps) {
               {...register("description")}
             />
           ) : (
-            <div className="min-h-[144px] rounded-md border border-white/10 bg-slate-900/40 p-3">
+            <div className="min-h-[144px] rounded-md border border-white/10 bg-slate-900/40 p-3 overflow-hidden">
               {watchAllFields.description ? (
-                <MarkdownContent>{watchAllFields.description}</MarkdownContent>
+                <MarkdownContent maxLength={4000}>{watchAllFields.description}</MarkdownContent>
               ) : (
                 <p className="text-sm text-slate-500 italic">Nothing to preview yet — write some Markdown first.</p>
               )}

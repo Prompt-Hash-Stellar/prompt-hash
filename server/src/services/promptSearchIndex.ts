@@ -1,13 +1,14 @@
 import { Types } from "mongoose";
 import { PromptSearchIndex } from "../models/PromptSearchIndex";
 import { cacheGetOrLoad, cacheDelPattern, CACHE_KEYS } from "./cacheService";
+import { sanitizePreviewText } from "../utils/previewSanitizer";
 
 export async function indexPromptProjection(prompt: any, creator: string, sourceLedger: number) {
   const result = await PromptSearchIndex.updateOne(
     { promptId: String(prompt.onChainId) },
     { $set: {
       promptId: String(prompt.onChainId), title: prompt.title || "Untitled prompt",
-      category: prompt.category || "Other", preview: String(prompt.description || "").slice(0, 280),
+      category: prompt.category || "Other", preview: sanitizePreviewText(prompt.description || prompt.previewText || ""),
       tags: (prompt.tags || []).map((tag: string) => tag.toLowerCase()),
       creator: creator.toLowerCase(), active: prompt.isActive !== false,
       sourceLedger,
