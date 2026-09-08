@@ -211,6 +211,85 @@ export const CreatePrompt = async (
   }
 };
 
+export interface ControllerDecodedCursor {
+  createdAt: Date;
+  id: mongoose.Types.ObjectId;
+}
+
+/**
+ * Encodes a prompt document into a base64url cursor token.
+ *
+ * @param item - An object containing createdAt and _id or id
+ * @returns A base64url encoded cursor string
+ */
+export const encodePromptCursor = (item: { createdAt: Date | string; _id?: any; id?: any }): string => {
+  const createdAt =
+    item.createdAt instanceof Date
+      ? item.createdAt.toISOString()
+      : new Date(item.createdAt).toISOString();
+  const id = (item._id ?? item.id).toString();
+  const base64 = Buffer.from(JSON.stringify({ createdAt, id })).toString("base64");
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+/**
+ * Decodes and validates a base64url cursor token safely.
+ *
+ * @param token - Base64url encoded cursor string
+ * @returns Decoded cursor containing parsed Date and ObjectId
+ * @throws Error if the token is invalid or malformed
+ */
+export const decodePromptCursor = (token: unknown): ControllerDecodedCursor => {
+  if (typeof token !== "string" || !token.trim()) {
+    throw new Error("Cursor token must be a non-empty string");
+  }
+
+  let parsed: any;
+  try {
+    let base64 = token.replace(/-/g, "+").replace(/_/g, "/");
+    while (base64.length % 4) {
+      base64 += "=";
+    }
+    const jsonStr = Buffer.from(base64, "base64").toString("utf8");
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    throw new Error("Invalid base64url or JSON format in cursor token");
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Cursor payload must be an object");
+  }
+
+  if (!parsed.createdAt || typeof parsed.createdAt !== "string") {
+    throw new Error("Cursor payload missing createdAt string");
+  }
+
+  const createdAt = new Date(parsed.createdAt);
+  if (isNaN(createdAt.getTime())) {
+    throw new Error("Cursor payload has invalid createdAt date");
+  }
+
+  if (
+    !parsed.id ||
+    typeof parsed.id !== "string" ||
+    !mongoose.Types.ObjectId.isValid(parsed.id)
+  ) {
+    throw new Error("Cursor payload has invalid ObjectId");
+  }
+
+  return {
+    createdAt,
+    id: new mongoose.Types.ObjectId(parsed.id),
+  };
+};
+
+/**
+ * Retrieves prompts using deterministic cursor pagination or legacy list cache.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ * @returns Express response with prompts array or paginated payload
+ */
 export const GetPrompts = async (
   req: Request,
   res: Response,
@@ -221,31 +300,90 @@ export const GetPrompts = async (
     const { searchParams } = new URL(req.url);
     const category = searchParams.get("category");
     const walletAddress = searchParams.get("walletAddress");
+    const cursor = searchParams.get("cursor");
+    const limit = searchParams.get("limit");
 
-    // Build a deterministic cache key from the query params
-    const cacheKey = CACHE_KEYS.promptList(`cat=${category ?? ""}&wallet=${walletAddress ?? ""}`);
-    const prompts = await cacheGetOrLoad(cacheKey, async () => {
-      const query: any = { listingStatus: "published", isActive: true };
-
-      if (category) {
-        query.category = category;
+    let decodedCursor: ControllerDecodedCursor | null = null;
+    if (cursor !== null && cursor.trim() !== "") {
+      try {
+        decodedCursor = decodePromptCursor(cursor);
+      } catch {
+        return res.status(400).json({ error: "Invalid cursor token" });
       }
+    }
 
-      if (walletAddress) {
-        const user = await User.findOne({
-          walletAddress: walletAddress.toLowerCase(),
-        });
-        if (user) {
-          query.owner = user._id;
+    if (!cursor && !limit) {
+      const cacheKey = CACHE_KEYS.promptList(`cat=${category ?? ""}&wallet=${walletAddress ?? ""}`);
+      const prompts = await cacheGetOrLoad(cacheKey, async () => {
+        const query: any = { listingStatus: "published", isActive: true };
+
+        if (category) {
+          query.category = category;
         }
+
+        if (walletAddress) {
+          const user = await User.findOne({
+            walletAddress: walletAddress.toLowerCase(),
+          });
+          if (user) {
+            query.owner = user._id;
+          }
+        }
+
+        return Prompt.find(query)
+          .populate("owner", "username walletAddress")
+          .sort({ createdAt: -1 });
+      });
+
+      return res.json(prompts);
+    }
+
+    const query: any = { listingStatus: "published", isActive: true };
+    if (category) {
+      query.category = category;
+    }
+    if (walletAddress) {
+      const user = await User.findOne({
+        walletAddress: walletAddress.toLowerCase(),
+      });
+      if (user) {
+        query.owner = user._id;
+      } else {
+        return res.json({
+          items: [],
+          prompts: [],
+          nextCursor: null,
+          hasMore: false,
+        });
       }
+    }
 
-      return Prompt.find(query)
-        .populate("owner", "username walletAddress")
-        .sort({ createdAt: -1 });
+    if (decodedCursor) {
+      query.$or = [
+        { createdAt: { $lt: decodedCursor.createdAt } },
+        { createdAt: decodedCursor.createdAt, _id: { $lt: decodedCursor.id } },
+      ];
+    }
+
+    const parsedLimit = parseInt(String(limit), 10);
+    const pageSize = !isNaN(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 20;
+
+    const rows = await Prompt.find(query)
+      .populate("owner", "username walletAddress")
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pageSize + 1);
+
+    const hasMore = rows.length > pageSize;
+    const items = rows.slice(0, pageSize);
+    const lastItem = items.length > 0 ? items[items.length - 1] : null;
+    const nextCursor = hasMore && lastItem ? encodePromptCursor(lastItem) : null;
+
+    return res.json({
+      items,
+      prompts: items,
+      nextCursor,
+      hasMore,
     });
-
-    return res.json(prompts);
   } catch (error) {
     console.error("Fetch prompts error:", error);
 
