@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 2,
+  "eventType": "purchase",
+  "description": "V2 contract purchase event with explicit schema version, referral fee stroops, and version index",
+  "rawEvent": {
+    "topic": ["PromptPurchased", "1", "v2"],
+    "value": {
+      "schema_version": 2,
+      "prompt_id": 1,
+      "buyer": "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI",
+      "creator": "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3IFOKIJWVSYY",
+      "price_stroops": 10000000,
+      "referrer": "GDRWKPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3IFOKIJWVSYY",
+      "referral_fee_stroops": 500000,
+      "tx_hash": "0xc3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef0102",
+      "version_index": 3
+    },
+    "ledger": 10004,
+    "transaction": "d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef010203",
+    "eventIndex": 0
+  },
+  "expectedCanonical": {
+    "eventType": "purchase",
+    "version": 2,
+    "promptId": "1",
+    "buyer": "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI",
+    "creator": "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3IFOKIJWVSYY",
+    "priceStroops": "10000000",
+    "priceXlm": 1.0,
+    "referrer": "GDRWKPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3IFOKIJWVSYY",
+    "referralFeeStroops": "500000",
+    "referralFeeXlm": 0.05,
+    "txHash": "0xc3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef0102",
+    "versionIndex": 3
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Event with unrecognized event topic that cannot be mapped to any known event handler",
+  "rawEvent": {
+    "topic": ["PromptUnknownTopicEvent", "1"],
+    "value": {
+      "prompt_id": 1,
+      "data": "some_random_payload"
+    },
+    "ledger": 10007,
+    "transaction": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "eventIndex": 0
+  },
+  "expectedDeadLetter": {
+    "reason": "UNKNOWN_EVENT_TYPE",
+    "recoverable": false
+  }
+}

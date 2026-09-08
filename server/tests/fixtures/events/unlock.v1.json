@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "eventType": "unlock",
+  "description": "V1 contract unlock event (PromptUnlocked) containing prompt_id, buyer, and timestamp",
+  "rawEvent": {
+    "topic": ["PromptUnlocked", "1"],
+    "value": {
+      "prompt_id": 1,
+      "buyer": "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI",
+      "timestamp": 1717000000
+    },
+    "ledger": 10005,
+    "transaction": "e5f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef01020304",
+    "eventIndex": 0
+  },
+  "expectedCanonical": {
+    "eventType": "unlock",
+    "version": 1,
+    "promptId": "1",
+    "buyer": "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI",
+    "timestamp": 1717000000,
+    "requestId": null,
+    "clientSession": null
+  }
+}

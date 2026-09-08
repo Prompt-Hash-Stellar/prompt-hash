@@ -510,6 +510,15 @@ impl Events {
     pub fn emit_dispute_appealed(env: &Env, prompt_id: u64, buyer: Address) {
         DisputeAppealed { prompt_id, buyer }.publish(env);
     }
+
+    pub fn emit_prompt_unlocked(env: &Env, prompt_id: u64, buyer: Address, timestamp: u64) {
+        PromptUnlocked {
+            prompt_id,
+            buyer,
+            timestamp,
+        }
+        .publish(env);
+    }
 }
 
 #[contractevent]
@@ -557,4 +566,12 @@ pub struct DisputeAppealed {
     #[topic]
     pub prompt_id: u64,
     pub buyer: Address,
+}
+
+#[contractevent]
+pub struct PromptUnlocked {
+    #[topic]
+    pub prompt_id: u64,
+    pub buyer: Address,
+    pub timestamp: u64,
 }

@@ -1,0 +1,21 @@
+{
+  "name": "prompt-contract-event-fixtures",
+  "version": "1.0.0",
+  "supportedEventTypes": ["publish", "purchase", "unlock"],
+  "supportedVersions": [1, 2],
+  "fixtures": {
+    "supported": [
+      { "eventType": "publish", "version": 1, "path": "publish.v1.json" },
+      { "eventType": "publish", "version": 2, "path": "publish.v2.json" },
+      { "eventType": "purchase", "version": 1, "path": "purchase.v1.json" },
+      { "eventType": "purchase", "version": 2, "path": "purchase.v2.json" },
+      { "eventType": "unlock", "version": 1, "path": "unlock.v1.json" },
+      { "eventType": "unlock", "version": 2, "path": "unlock.v2.json" }
+    ],
+    "unsupported": [
+      { "name": "unknown_topic", "path": "unsupported.unknown_topic.json" },
+      { "name": "invalid_version", "path": "unsupported.invalid_version.json" },
+      { "name": "malformed_payload", "path": "unsupported.malformed_payload.json" }
+    ]
+  }
+}
