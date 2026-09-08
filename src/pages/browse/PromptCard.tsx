@@ -41,7 +41,7 @@ export const PromptCard = React.memo(function PromptCard({
   onToggleSave: (_prompt: PromptRecord) => void;
   isCompared?: boolean;
   onToggleCompare?: (_prompt: PromptRecord) => void;
-}) => {
+}) {
   const isBestSeller = prompt.salesCount >= 10;
   const reducedMotion = useReducedMotion();
 

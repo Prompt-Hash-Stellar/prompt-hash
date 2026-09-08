@@ -392,3 +392,52 @@ This is critical because PromptHash retries failed deliveries, which may result 
 Webhook endpoints should handle bursts gracefully. We recommend:
 - Return 200 quickly and process asynchronously
 - Use 429 with `Retry-After` header if your system is overloaded
+
+## Payout Statements & Settlement Reconciliation Endpoints
+
+For comprehensive settlement equations, carryover accounting, and export specifications, see [payout-statements.md](./payout-statements.md).
+
+### List or Preview Payout Statements
+`GET /api/payouts/statements/:walletAddress`
+
+Query parameters:
+- `preview`: `true` to preview reconciliation on-the-fly without database write.
+- `periodStart`: Start date (ISO format).
+- `periodEnd`: End date (ISO format).
+- `page`: Page index (default: 1).
+- `limit`: Page size (default: 20).
+
+### Get Statement Details
+`GET /api/payouts/statements/:walletAddress/:statementId`
+
+Returns statement summary and itemized line items ledger.
+
+### Export Statement
+`GET /api/payouts/statements/:walletAddress/:statementId/export?format=csv|json`
+
+Exports statement as RFC-4180 CSV or structured JSON.
+
+### Generate Statement
+`POST /api/payouts/statements/generate`
+
+Body:
+```json
+{
+  "creatorWallet": "G...",
+  "periodStart": "2026-08-01T00:00:00.000Z",
+  "periodEnd": "2026-08-31T23:59:59.999Z",
+  "platformFeeBps": 500
+}
+```
+
+### Update Statement Status
+`PATCH /api/payouts/statements/:statementId/status`
+
+Body:
+```json
+{
+  "status": "settled",
+  "payoutTxHash": "...",
+  "settledAt": "2026-09-01T00:00:00.000Z"
+}
+```
