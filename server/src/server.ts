@@ -12,6 +12,7 @@ import { governanceRouter } from "./routes/governanceRoutes"; // Issue #113
 import searchRouter from "./routes/searchRoutes";
 import { fulfillmentRouter } from "./routes/fulfillmentRoutes";
 import { reconciliationRouter } from "./routes/reconciliationRoutes";
+import { payoutRouter } from "./routes/payoutRoutes";
 import { reviewRouter } from "./routes/reviewRoutes";
 import { computeReadiness } from "./services/healthService";
 import {
@@ -80,6 +81,8 @@ app.use("/api/governance", defaultJsonLimit, authLimiter, governanceRouter); // 
 app.use("/api/search", defaultJsonLimit, searchRouter);
 app.use("/api/fulfillment", defaultJsonLimit, strictLimiter, fulfillmentRouter);
 app.use("/api/reviews", defaultJsonLimit, reviewRouter);
+app.use("/api/reconciliation", defaultJsonLimit, reconciliationRouter);
+app.use("/api/payouts", defaultJsonLimit, payoutRouter);
 
 app.post("/api/test-prompt", defaultJsonLimit, strictLimiter, TestPromptProxy);
 

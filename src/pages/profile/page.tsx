@@ -65,6 +65,7 @@ import { stellarNetwork } from "@/lib/env";
 import { connectWallet } from "@/util/wallet";
 import { usePageMeta } from "@/lib/seo/usePageMeta";
 import { CreatorProfileSettings } from "@/components/profile/CreatorProfileSettings";
+import { PayoutStatementsCard } from "@/components/profile/PayoutStatementsCard";
 import { UserAvatar } from "@/components/UserAvatar";
 
 const promptImageFallback = "/images/codeguru.png";
@@ -1082,7 +1083,10 @@ export default function ProfilePage() {
                   <TabsContent value="created" className="mt-0 space-y-6">
                     {/* Creator activity dashboard — metrics, revenue, top performers (#213) */}
                     {!isPublicView && address && (
-                      <CreatorDashboard walletAddress={address} />
+                      <>
+                        <CreatorDashboard walletAddress={address} />
+                        <PayoutStatementsCard walletAddress={address} />
+                      </>
                     )}
 
                     {createdQuery.isLoading ? (

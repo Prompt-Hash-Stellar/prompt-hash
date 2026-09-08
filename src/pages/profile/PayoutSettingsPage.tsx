@@ -21,6 +21,7 @@ import { useWalletBalance } from "@/hooks/useWalletBalance";
 import { shortenAddress } from "@/lib/utils";
 import { stellarNetwork } from "@/lib/env";
 import { usePageMeta } from "@/lib/seo/usePageMeta";
+import { PayoutStatementsCard } from "@/components/profile/PayoutStatementsCard";
 
 
 
@@ -324,6 +325,7 @@ export default function PayoutSettingsPage() {
                 </div>
               </div>
             </div>
+            {address && <PayoutStatementsCard walletAddress={address} />}
           </div>
         )}
       </main>
