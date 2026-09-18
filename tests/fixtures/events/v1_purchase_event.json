@@ -1,0 +1,16 @@
+{
+  "_comment": "Versioned fixture for the PromptPurchased / purchase event (contract schema v1).",
+  "schema_version": 1,
+  "event_type": "PromptPurchased",
+  "topics": {
+    "prompt_id": 42,
+    "buyer": "GDSOHLMUIZFADTX2YXTW6HJVSBXMHFQSYAGJBMHULNZPQTYSBKZSKJR7",
+    "creator": "GBMXHCFKH7EZGDKL7PXMZFQ6MFRCQOQMQVZNXPYWVB2VVQKPZQB5JVF"
+  },
+  "data": {
+    "price_stroops": 10000000,
+    "referrer": null
+  },
+  "ledger": 1234568,
+  "timestamp": "2024-01-15T10:05:00Z"
+}
