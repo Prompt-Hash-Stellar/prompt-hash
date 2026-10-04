@@ -11,6 +11,7 @@ export type AuditAction =
   | "unlock_integrity_failure"
   | "unlock_error"
   | "unlock_rate_limited"
+  | "unlock_replay_detected"
   | "kms_key_rotated"
   | "kms_break_glass_triggered"
   | "kms_key_revoked"
@@ -23,6 +24,8 @@ export type AuditResult = "success" | "failure" | "blocked";
 
 const auditLogSchema = new mongoose.Schema(
   {
+    // Present only for durable outbox deliveries; legacy audit rows remain valid.
+    acceptanceId: { type: String },
     action: {
       type: String,
       required: true,
@@ -36,6 +39,7 @@ const auditLogSchema = new mongoose.Schema(
         "unlock_integrity_failure",
         "unlock_error",
         "unlock_rate_limited",
+        "unlock_replay_detected",
         "kms_key_rotated",
         "kms_break_glass_triggered",
         "kms_key_revoked",
@@ -122,6 +126,13 @@ auditLogSchema.pre("save", async function () {
 });
 
 // Compound indexes for common incident-review queries.
+auditLogSchema.index(
+  { acceptanceId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { acceptanceId: { $type: "string" } },
+  },
+);
 auditLogSchema.index({ walletAddress: 1, createdAt: -1 });
 auditLogSchema.index({ promptId: 1, createdAt: -1 });
 auditLogSchema.index({ action: 1, result: 1, createdAt: -1 });
@@ -139,4 +150,3 @@ auditLogSchema.pre("updateMany", function () {
 
 export const AuditLog =
   mongoose.models.AuditLog || mongoose.model("AuditLog", auditLogSchema);
-

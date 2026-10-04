@@ -1,0 +1,485 @@
+/**
+ * Durable audit acceptance tests (#167).
+ *
+ * Covers: DB/queue outage, process crash, duplicate delivery,
+ * backlog saturation, and recovery after drain resumes.
+ */
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  AuditAcceptError,
+  DurableAuditQueue,
+  acceptCriticalOrThrow,
+  buildDeliveryKey,
+  createInMemoryOutboxStore,
+  hashClientIp,
+  hashWalletAddress,
+  redactAcceptInput,
+  type OutboxStore,
+  type RedactedAuditPayload,
+} from "./durableAudit";
+
+describe("redaction", () => {
+  it("hashes wallet and IP; never keeps raw values", () => {
+    const payload = redactAcceptInput({
+      action: "unlock_success",
+      result: "success",
+      promptId: "42",
+      walletAddress: "GABCDE",
+      requestId: "req-1",
+      clientIp: "203.0.113.9",
+      reason: null,
+    });
+
+    expect(payload.walletHash).toBe(hashWalletAddress("GABCDE"));
+    expect(payload.clientIpHash).toBe(hashClientIp("203.0.113.9"));
+    expect(JSON.stringify(payload)).not.toContain("GABCDE");
+    expect(JSON.stringify(payload)).not.toContain("203.0.113.9");
+    expect(payload).not.toHaveProperty("plaintext");
+    expect(payload).not.toHaveProperty("signedMessage");
+    expect(payload).not.toHaveProperty("privateKey");
+  });
+
+  it("builds stable delivery keys for idempotency", () => {
+    const a = redactAcceptInput({
+      action: "unlock_success",
+      result: "success",
+      promptId: "1",
+      walletAddress: "GX",
+      requestId: "r",
+      reason: null,
+    });
+    const b = redactAcceptInput({
+      action: "unlock_success",
+      result: "success",
+      promptId: "1",
+      walletAddress: "gx",
+      requestId: "r",
+      reason: null,
+    });
+    expect(buildDeliveryKey(a)).toBe(buildDeliveryKey(b));
+  });
+});
+
+describe("accept-before-complete", () => {
+  let store: OutboxStore;
+  let queue: DurableAuditQueue;
+
+  beforeEach(() => {
+    store = createInMemoryOutboxStore();
+    queue = new DurableAuditQueue(store, {
+      maxBacklog: 3,
+      maxRetries: 2,
+      baseBackoffMs: 10,
+      idFactory: () => `id-${Math.random().toString(16).slice(2)}`,
+    });
+  });
+
+  it("returns a durable acceptance ID on success", async () => {
+    const { acceptanceId, duplicate } = await queue.accept({
+      action: "unlock_success",
+      result: "success",
+      promptId: "7",
+      walletAddress: "GWALLET",
+      requestId: "req-ok",
+    });
+
+    expect(acceptanceId).toMatch(/^id-/);
+    expect(duplicate).toBe(false);
+    const row = await store.getById(acceptanceId);
+    expect(row?.status).toBe("accepted");
+    expect(queue.getMetrics().accepted).toBe(1);
+  });
+
+  it("deduplicates identical deliveries", async () => {
+    const first = await queue.accept({
+      action: "unlock_no_access",
+      result: "failure",
+      promptId: "7",
+      walletAddress: "GW",
+      requestId: "req-dup",
+      reason: "no_access",
+    });
+    const second = await queue.accept({
+      action: "unlock_no_access",
+      result: "failure",
+      promptId: "7",
+      walletAddress: "GW",
+      requestId: "req-dup",
+      reason: "no_access",
+    });
+
+    expect(second.acceptanceId).toBe(first.acceptanceId);
+    expect(second.duplicate).toBe(true);
+    expect(queue.getMetrics().accepted).toBe(1);
+  });
+
+  it("rejects when backlog is saturated (fail closed)", async () => {
+    for (let i = 0; i < 3; i += 1) {
+      await queue.accept({
+        action: "unlock_success",
+        result: "success",
+        promptId: String(i),
+        requestId: `req-${i}`,
+      });
+    }
+
+    await expect(
+      queue.accept({
+        action: "unlock_success",
+        result: "success",
+        promptId: "overflow",
+        requestId: "req-overflow",
+      }),
+    ).rejects.toBeInstanceOf(AuditAcceptError);
+
+    expect(queue.getMetrics().dropped).toBe(1);
+    expect(queue.getMetrics().acceptFailures).toBe(1);
+  });
+
+  it.each(["findByDeliveryKey", "countOpen", "insert"] as const)(
+    "fails closed on a %s store outage",
+    async (operation) => {
+      const failing: OutboxStore = {
+        ...store,
+        async [operation]() {
+          throw new Error("DB down");
+        },
+      };
+      const q = new DurableAuditQueue(failing);
+
+      await expect(
+        q.accept({
+          action: "unlock_success",
+          result: "success",
+          promptId: "1",
+          requestId: "req-db",
+        }),
+      ).rejects.toMatchObject({ code: "AUDIT_ACCEPT_FAILED" });
+
+      expect(q.getMetrics().acceptFailures).toBe(1);
+    },
+  );
+
+  it("accepts and deduplicates a request after a read outage recovers", async () => {
+    let available = false;
+    const recovering: OutboxStore = {
+      ...store,
+      async findByDeliveryKey(key) {
+        if (!available) throw new Error("temporary read outage");
+        return store.findByDeliveryKey(key);
+      },
+    };
+    const q = new DurableAuditQueue(recovering);
+    const input = {
+      action: "unlock_success" as const,
+      result: "success" as const,
+      promptId: "42",
+      requestId: "read-recovery",
+    };
+
+    await expect(q.accept(input)).rejects.toBeInstanceOf(AuditAcceptError);
+    available = true;
+    const accepted = await q.accept(input);
+    expect(accepted.duplicate).toBe(false);
+    expect((await store.getById(accepted.acceptanceId))?.status).toBe(
+      "accepted",
+    );
+    expect(await q.accept(input)).toEqual({ ...accepted, duplicate: true });
+    expect(q.getMetrics()).toMatchObject({ accepted: 1, acceptFailures: 1 });
+  });
+});
+
+describe("drain / crash recovery / DLQ", () => {
+  let store: OutboxStore;
+  let queue: DurableAuditQueue;
+  let clock: number;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+    store = createInMemoryOutboxStore();
+    queue = new DurableAuditQueue(store, {
+      maxBacklog: 100,
+      maxRetries: 2,
+      baseBackoffMs: 50,
+      now: () => clock,
+      idFactory: () => `id-${clock++}`,
+    });
+  });
+
+  it("recovers accepted-but-not-drained rows after process crash", async () => {
+    const { acceptanceId } = await queue.accept({
+      action: "unlock_success",
+      result: "success",
+      promptId: "9",
+      requestId: "req-crash",
+    });
+
+    const recovered = new DurableAuditQueue(store, {
+      maxRetries: 2,
+      baseBackoffMs: 50,
+      now: () => clock,
+    });
+
+    const persisted: string[] = [];
+    const result = await recovered.drainOnce(async (payload, id) => {
+      persisted.push(`${id}:${payload.action}`);
+    });
+
+    expect(result).toBe("drained");
+    expect(persisted).toEqual([`${acceptanceId}:unlock_success`]);
+    expect((await store.getById(acceptanceId))?.status).toBe("drained");
+    expect(recovered.getMetrics().drained).toBe(1);
+  });
+
+  it("retries on persist failure then dead-letters", async () => {
+    const { acceptanceId } = await queue.accept({
+      action: "unlock_integrity_failure",
+      result: "failure",
+      promptId: "3",
+      requestId: "req-dlq",
+      reason: "integrity_failure",
+    });
+
+    const boom = async () => {
+      throw new Error("AuditLog write failed");
+    };
+
+    expect(await queue.drainOnce(boom)).toBe("retried");
+    expect((await store.getById(acceptanceId))?.status).toBe("accepted");
+    expect(queue.getMetrics().retried).toBe(1);
+
+    clock += 1_000;
+    expect(await queue.drainOnce(boom)).toBe("retried");
+
+    clock += 1_000;
+    expect(await queue.drainOnce(boom)).toBe("dlq");
+    expect((await store.getById(acceptanceId))?.status).toBe("dlq");
+    expect(queue.getMetrics().dlq).toBe(1);
+  });
+
+  it("reclaims an abandoned claim only after its lease expires", async () => {
+    const { acceptanceId } = await queue.accept({
+      action: "unlock_success",
+      result: "success",
+      requestId: "crash-after-claim",
+    });
+    const abandoned = (await store.claimNext(clock, 100))!;
+    const recovered = new DurableAuditQueue(store, {
+      now: () => clock,
+      leaseDurationMs: 100,
+    });
+    const delivered: string[] = [];
+    const persist = async (_payload: RedactedAuditPayload, id: string) => {
+      expect((await store.getById(id))?.leaseToken).not.toBe(
+        abandoned.leaseToken,
+      );
+      delivered.push(id);
+    };
+
+    clock = abandoned.leaseExpiresAt - 1;
+    expect(await recovered.drainOnce(persist)).toBe("idle");
+    expect(delivered).toEqual([]);
+    clock += 1;
+    expect(await recovered.drainOnce(persist)).toBe("drained");
+    expect(delivered).toEqual([acceptanceId]);
+    expect(await store.getById(acceptanceId)).toMatchObject({
+      status: "drained",
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+  });
+
+  it("recovers a legacy draining row without lease metadata", async () => {
+    const { acceptanceId } = await queue.accept({
+      action: "unlock_success",
+      result: "success",
+      requestId: "legacy-claim",
+    });
+    const row = (await store.getById(acceptanceId))!;
+    const legacyStore = createInMemoryOutboxStore();
+    await legacyStore.insert({ ...row, status: "draining" });
+    const recovered = new DurableAuditQueue(legacyStore, { now: () => clock });
+
+    expect(await recovered.drainOnce(async () => {})).toBe("drained");
+    expect((await legacyStore.getById(acceptanceId))?.status).toBe("drained");
+  });
+
+  it.each(["success", "retry", "dlq"] as const)(
+    "fences a stale worker's %s transition after another worker reclaims",
+    async (outcome) => {
+      queue = new DurableAuditQueue(store, {
+        now: () => clock,
+        leaseDurationMs: 100,
+        maxRetries: outcome === "dlq" ? 0 : 2,
+      });
+      const { acceptanceId } = await queue.accept({
+        action: "unlock_success",
+        result: "success",
+        requestId: `stale-${outcome}`,
+      });
+      let finish!: () => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const staleWorker = queue.drainOnce(async () => {
+        entered();
+        await pending;
+        if (outcome !== "success") throw new Error("late persistence failure");
+      });
+      await started;
+      clock += 100;
+      const replacement = (await store.claimNext(clock, 100))!;
+      finish();
+
+      expect(await staleWorker).toBe("lease_lost");
+      expect(await store.getById(acceptanceId)).toMatchObject({
+        status: "draining",
+        leaseToken: replacement.leaseToken,
+        attemptCount: 0,
+        lastError: null,
+      });
+      expect(queue.getMetrics()).toMatchObject({
+        drained: 0,
+        retried: 0,
+        dlq: 0,
+      });
+      expect(
+        await store.markDrained(acceptanceId, replacement.leaseToken),
+      ).toBe(true);
+    },
+  );
+
+  it("drains successfully after transient outage recovers", async () => {
+    await queue.accept({
+      action: "unlock_invalid_signature",
+      result: "failure",
+      promptId: "2",
+      requestId: "req-rec",
+      reason: "invalid_signature",
+    });
+
+    let calls = 0;
+    const flaky = async (_p: RedactedAuditPayload, _id: string) => {
+      calls += 1;
+      if (calls === 1) throw new Error("transient");
+    };
+
+    expect(await queue.drainOnce(flaky)).toBe("retried");
+    clock += 1_000;
+    expect(await queue.drainOnce(flaky)).toBe("drained");
+    expect(queue.getMetrics().drained).toBe(1);
+    expect(queue.getMetrics().retried).toBe(1);
+  });
+});
+
+describe("degraded policy adapter", () => {
+  it.each(["findByDeliveryKey", "countOpen", "insert"] as const)(
+    "honors explicit degraded mode on a %s outage",
+    async (operation) => {
+      const store: OutboxStore = {
+        ...createInMemoryOutboxStore(),
+        async [operation]() {
+          throw new Error("DB down");
+        },
+      };
+      const queue = new DurableAuditQueue(store);
+      const result = await acceptCriticalOrThrow(
+        queue,
+        {
+          action: "unlock_success",
+          result: "success",
+          requestId: "read-outage",
+        },
+        true,
+      );
+
+      expect(result).toEqual({
+        acceptanceId: null,
+        duplicate: false,
+        degraded: true,
+      });
+      expect(queue.getMetrics()).toMatchObject({
+        accepted: 0,
+        acceptFailures: 1,
+        degraded: 1,
+      });
+    },
+  );
+
+  it("returns degraded=true instead of throwing when opted in", async () => {
+    const store = createInMemoryOutboxStore();
+    const queue = new DurableAuditQueue(store, { maxBacklog: 0 });
+
+    const result = await acceptCriticalOrThrow(
+      queue,
+      {
+        action: "unlock_success",
+        result: "success",
+        promptId: "1",
+        requestId: "req-deg",
+      },
+      true,
+    );
+
+    expect(result.degraded).toBe(true);
+    expect(result.acceptanceId).toBeNull();
+    expect(queue.getMetrics().degraded).toBe(1);
+  });
+
+  it("rethrows when degraded mode is off", async () => {
+    const store = createInMemoryOutboxStore();
+    const queue = new DurableAuditQueue(store, { maxBacklog: 0 });
+
+    await expect(
+      acceptCriticalOrThrow(
+        queue,
+        {
+          action: "unlock_success",
+          result: "success",
+          promptId: "1",
+          requestId: "req-strict",
+        },
+        false,
+      ),
+    ).rejects.toBeInstanceOf(AuditAcceptError);
+  });
+});
+
+describe("metrics", () => {
+  it("exposes counters for ops dashboards", async () => {
+    const store = createInMemoryOutboxStore();
+    const queue = new DurableAuditQueue(store, {
+      maxBacklog: 1,
+      maxRetries: 0,
+    });
+
+    await queue.accept({
+      action: "unlock_rate_limited",
+      result: "blocked",
+      requestId: "m1",
+      reason: "ip_rate_limit_exceeded",
+    });
+
+    await expect(
+      queue.accept({
+        action: "unlock_rate_limited",
+        result: "blocked",
+        requestId: "m2",
+        reason: "ip_rate_limit_exceeded",
+      }),
+    ).rejects.toBeInstanceOf(AuditAcceptError);
+
+    await queue.drainOnce(async () => {
+      throw new Error("sink down");
+    });
+
+    const m = queue.getMetrics();
+    expect(m.accepted).toBe(1);
+    expect(m.dropped).toBe(1);
+    expect(m.dlq).toBe(1);
+  });
+});
