@@ -1,0 +1,449 @@
+/**
+ * Unlock fulfillment / dispute-hold policy (#166).
+ *
+ * Mandatory holds (refund, open dispute) must be evaluated before decryption.
+ * Database failures fail closed: deny with a stable retryable error and never
+ * bypass policy. An optional short-lived HMAC-signed snapshot softens brief
+ * outages after a successful live evaluation — stale or unsigned cache never
+ * grants access.
+ */
+
+import { createHmac, timingSafeEqual } from "crypto";
+
+export const POLICY_UNAVAILABLE_MESSAGE =
+  "Access policy could not be verified. Please try again shortly.";
+
+export const DENY_MESSAGES = {
+  refund_requested: "Access is temporarily held due to an open dispute.",
+  refunded: "Access has been revoked following a refund.",
+} as const;
+
+export type DenyReason = keyof typeof DENY_MESSAGES;
+
+export type UnlockPolicyDecision =
+  | {
+      outcome: "allow";
+      status: string | null;
+      source: "live" | "cache";
+    }
+  | {
+      outcome: "deny";
+      reason: DenyReason;
+      message: string;
+      status: string;
+      source: "live" | "cache";
+    }
+  | {
+      outcome: "unavailable";
+      message: string;
+      cause?: string;
+    };
+
+export interface FulfillmentStatusRow {
+  status: string;
+}
+
+export type FindFulfillment = (
+  promptId: string,
+  buyerWallet: string,
+) => Promise<FulfillmentStatusRow | null>;
+
+/** Default live-lookup budget; hung Mongo must not hang unlock forever. */
+export const DEFAULT_LOOKUP_TIMEOUT_MS = 3_000;
+
+/** Default signed-snapshot freshness window. */
+export const DEFAULT_POLICY_CACHE_TTL_MS = 30_000;
+
+/** Bound process-local snapshot retention even when buyers never return. */
+export const DEFAULT_POLICY_CACHE_MAX_ENTRIES = 10_000;
+
+export interface PolicySnapshotPayload {
+  promptId: string;
+  buyerWallet: string;
+  decision: "allow" | "deny";
+  status: string | null;
+  denyReason?: DenyReason;
+  evaluatedAt: number;
+}
+
+function cacheKey(promptId: string, buyerWallet: string): string {
+  return `${promptId}:${buyerWallet.toLowerCase()}`;
+}
+
+function canonicalPayload(payload: PolicySnapshotPayload): string {
+  return JSON.stringify({
+    promptId: payload.promptId,
+    buyerWallet: payload.buyerWallet.toLowerCase(),
+    decision: payload.decision,
+    status: payload.status,
+    denyReason: payload.denyReason ?? null,
+    evaluatedAt: payload.evaluatedAt,
+  });
+}
+
+export function signPolicySnapshot(
+  payload: PolicySnapshotPayload,
+  secret: string,
+): string {
+  const body = canonicalPayload(payload);
+  const sig = createHmac("sha256", secret).update(body).digest("base64url");
+  return `${Buffer.from(body, "utf8").toString("base64url")}.${sig}`;
+}
+
+export function verifyPolicySnapshot(
+  token: string,
+  secret: string,
+): PolicySnapshotPayload | null {
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [bodyB64, sig] = parts;
+  let body: string;
+  try {
+    body = Buffer.from(bodyB64, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+  const expected = createHmac("sha256", secret)
+    .update(body)
+    .digest("base64url");
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    const parsed = JSON.parse(body) as PolicySnapshotPayload;
+    if (
+      typeof parsed.promptId !== "string" ||
+      typeof parsed.buyerWallet !== "string" ||
+      (parsed.decision !== "allow" && parsed.decision !== "deny") ||
+      (parsed.decision === "deny" &&
+        parsed.denyReason !== "refund_requested" &&
+        parsed.denyReason !== "refunded") ||
+      typeof parsed.evaluatedAt !== "number" ||
+      !Number.isFinite(parsed.evaluatedAt)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+interface CachedPolicySnapshot {
+  token: string;
+  older?: string;
+  newer?: string;
+}
+
+export class UnlockPolicyCache {
+  private readonly store = new Map<string, CachedPolicySnapshot>();
+  private readonly maxEntries: number;
+  private oldestKey: string | undefined;
+  private newestKey: string | undefined;
+  private readonly updates = new Map<
+    string,
+    { nextOrder: number; latestPublished: number; pending: number }
+  >();
+
+  constructor(maxEntries = DEFAULT_POLICY_CACHE_MAX_ENTRIES) {
+    if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
+      throw new RangeError("Policy cache capacity must be a positive safe integer");
+    }
+    this.maxEntries = maxEntries;
+  }
+
+  /** Unlink one snapshot without changing pending lookup publication order. */
+  private removeSnapshot(key: string): void {
+    const entry = this.store.get(key);
+    if (!entry) return;
+    if (entry.older !== undefined) {
+      this.store.get(entry.older)!.newer = entry.newer;
+    } else {
+      this.oldestKey = entry.newer;
+    }
+    if (entry.newer !== undefined) {
+      this.store.get(entry.newer)!.older = entry.older;
+    } else {
+      this.newestKey = entry.older;
+    }
+    this.store.delete(key);
+  }
+
+  /** Evict by publication order in O(1), without scanning all cached keys. */
+  private storeSnapshot(key: string, token: string): void {
+    this.removeSnapshot(key);
+    if (this.newestKey !== undefined) {
+      this.store.get(this.newestKey)!.newer = key;
+    } else {
+      this.oldestKey = key;
+    }
+    this.store.set(key, { token, older: this.newestKey });
+    this.newestKey = key;
+    if (this.store.size > this.maxEntries) {
+      this.removeSnapshot(this.oldestKey!);
+    }
+  }
+
+  /** Order successful lookup writes independently of wall-clock timestamps. */
+  beginSnapshotUpdate(promptId: string, buyerWallet: string) {
+    const key = cacheKey(promptId, buyerWallet);
+    const state = this.updates.get(key) ?? {
+      nextOrder: 0,
+      latestPublished: 0,
+      pending: 0,
+    };
+    this.updates.set(key, state);
+    const order = ++state.nextOrder;
+    state.pending += 1;
+    let finished = false;
+
+    return {
+      publish: (token: string) => {
+        if (
+          !finished &&
+          this.updates.get(key) === state &&
+          order > state.latestPublished
+        ) {
+          state.latestPublished = order;
+          this.storeSnapshot(key, token);
+        }
+      },
+      finish: () => {
+        if (finished) return;
+        finished = true;
+        state.pending -= 1;
+        if (state.pending === 0 && this.updates.get(key) === state) {
+          this.updates.delete(key);
+        }
+      },
+    };
+  }
+
+  get(promptId: string, buyerWallet: string): string | undefined {
+    return this.store.get(cacheKey(promptId, buyerWallet))?.token;
+  }
+
+  set(promptId: string, buyerWallet: string, token: string): void {
+    const key = cacheKey(promptId, buyerWallet);
+    this.updates.delete(key);
+    this.storeSnapshot(key, token);
+  }
+
+  clear(): void {
+    this.store.clear();
+    this.oldestKey = undefined;
+    this.newestKey = undefined;
+    this.updates.clear();
+  }
+
+  /** Drop retained data while allowing an in-flight live lookup to refresh it. */
+  evict(promptId: string, buyerWallet: string): void {
+    this.removeSnapshot(cacheKey(promptId, buyerWallet));
+  }
+
+  delete(promptId: string, buyerWallet: string): void {
+    const key = cacheKey(promptId, buyerWallet);
+    this.evict(promptId, buyerWallet);
+    this.updates.delete(key);
+  }
+}
+
+/** Process-local default cache (tests can inject their own). */
+export const globalUnlockPolicyCache = new UnlockPolicyCache();
+
+function decisionFromSnapshot(
+  snapshot: PolicySnapshotPayload,
+  source: "live" | "cache",
+): UnlockPolicyDecision {
+  if (snapshot.decision === "deny" && snapshot.denyReason) {
+    return {
+      outcome: "deny",
+      reason: snapshot.denyReason,
+      message: DENY_MESSAGES[snapshot.denyReason],
+      status: snapshot.status ?? snapshot.denyReason,
+      source,
+    };
+  }
+  return {
+    outcome: "allow",
+    status: snapshot.status,
+    source,
+  };
+}
+
+function classifyFulfillment(row: FulfillmentStatusRow | null): {
+  decision: "allow" | "deny";
+  status: string | null;
+  denyReason?: DenyReason;
+} {
+  if (!row) {
+    return { decision: "allow", status: null };
+  }
+  if (row.status === "refund_requested") {
+    return {
+      decision: "deny",
+      status: row.status,
+      denyReason: "refund_requested",
+    };
+  }
+  if (row.status === "refunded") {
+    return {
+      decision: "deny",
+      status: row.status,
+      denyReason: "refunded",
+    };
+  }
+  return { decision: "allow", status: row.status };
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function tryCache(
+  promptId: string,
+  buyerWallet: string,
+  secret: string,
+  cache: UnlockPolicyCache,
+  now: number,
+  ttlMs: number,
+): UnlockPolicyDecision | null {
+  const token = cache.get(promptId, buyerWallet);
+  if (!token) return null;
+  const snapshot = verifyPolicySnapshot(token, secret);
+  if (!snapshot) {
+    cache.delete(promptId, buyerWallet);
+    return null;
+  }
+  if (
+    snapshot.promptId !== String(promptId) ||
+    snapshot.buyerWallet.toLowerCase() !== buyerWallet.toLowerCase()
+  ) {
+    cache.delete(promptId, buyerWallet);
+    return null;
+  }
+  if (snapshot.evaluatedAt > now) {
+    // A clock rollback must not extend a snapshot's freshness window.
+    cache.delete(promptId, buyerWallet);
+    return null;
+  }
+  if (now - snapshot.evaluatedAt > ttlMs) {
+    // Stale — fail closed and release the snapshot instead of retaining it.
+    cache.evict(promptId, buyerWallet);
+    return null;
+  }
+  return decisionFromSnapshot(snapshot, "cache");
+}
+
+export interface EvaluateUnlockPolicyOptions {
+  promptId: string;
+  buyerWallet: string;
+  findFulfillment: FindFulfillment;
+  signingSecret: string;
+  cache?: UnlockPolicyCache;
+  now?: number;
+  ttlMs?: number;
+  lookupTimeoutMs?: number;
+}
+
+/**
+ * Evaluate refund / dispute-hold policy for unlock.
+ * Live DB success updates the signed cache. Live failure uses a fresh signed
+ * cache entry only; otherwise returns `unavailable` (fail closed).
+ */
+export async function evaluateUnlockFulfillmentPolicy(
+  opts: EvaluateUnlockPolicyOptions,
+): Promise<UnlockPolicyDecision> {
+  const promptId = String(opts.promptId);
+  const buyerWallet = String(opts.buyerWallet).toLowerCase();
+  const secret = opts.signingSecret;
+  const cache = opts.cache ?? globalUnlockPolicyCache;
+  const injectedNow = opts.now;
+  const now = injectedNow ?? Date.now();
+  const ttlMs = opts.ttlMs ?? DEFAULT_POLICY_CACHE_TTL_MS;
+  const lookupTimeoutMs = opts.lookupTimeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS;
+
+  if (!secret) {
+    return {
+      outcome: "unavailable",
+      message: POLICY_UNAVAILABLE_MESSAGE,
+      cause: "missing_signing_secret",
+    };
+  }
+
+  const update = cache.beginSnapshotUpdate(promptId, buyerWallet);
+  try {
+    const row = await withTimeout(
+      opts.findFulfillment(promptId, buyerWallet),
+      lookupTimeoutMs,
+      "Fulfillment policy lookup",
+    );
+    const classified = classifyFulfillment(row);
+    const snapshot: PolicySnapshotPayload = {
+      promptId,
+      buyerWallet,
+      decision: classified.decision,
+      status: classified.status,
+      denyReason: classified.denyReason,
+      evaluatedAt: now,
+    };
+    update.publish(signPolicySnapshot(snapshot, secret));
+    return decisionFromSnapshot(snapshot, "live");
+  } catch (err) {
+    // The snapshot may expire while the live lookup is pending.
+    const cached = tryCache(
+      promptId,
+      buyerWallet,
+      secret,
+      cache,
+      injectedNow ?? Date.now(),
+      ttlMs,
+    );
+    if (cached) return cached;
+    const cause = err instanceof Error ? err.message : String(err);
+    return {
+      outcome: "unavailable",
+      message: POLICY_UNAVAILABLE_MESSAGE,
+      cause,
+    };
+  } finally {
+    update.finish();
+  }
+}
+
+/**
+ * Default Mongo-backed finder used by the unlock API.
+ * Isolated for tests to inject failures without mongoose.
+ */
+export async function findFulfillmentRecord(
+  promptId: string,
+  buyerWallet: string,
+): Promise<FulfillmentStatusRow | null> {
+  const FulfillmentRecord = (
+    await import("../../../server/src/models/FulfillmentRecord")
+  ).default;
+  const query = FulfillmentRecord.findOne({
+    promptId: String(promptId),
+    buyerWallet: String(buyerWallet).toLowerCase(),
+  });
+  const fulfillment =
+    typeof query?.lean === "function" ? await query.lean() : await query;
+  if (!fulfillment) return null;
+  return { status: String((fulfillment as { status: string }).status) };
+}
