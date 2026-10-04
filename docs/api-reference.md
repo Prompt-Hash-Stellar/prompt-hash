@@ -258,23 +258,41 @@ PromptHash delivers real-time event notifications via webhooks. Each subscriptio
 | `LicenseTransferred` | A license was transferred between wallets |
 | `ReviewSubmitted` | A buyer submitted a review for a prompt |
 
-### Register a webhook
+### Management authentication
+
+Both serverless and Express webhook management endpoints require either a signed wallet ownership proof or an authorized administrator bearer token. A wallet address alone does not authorize reading, registering, updating, or deleting a subscription.
+
+For signed-owner requests, provide `walletAddress`, `timestamp`, and `signedMessage`. Sign the UTF-8 bytes of this exact message with the wallet's signing key:
+
+```text
+prompt-hash webhooks:{lowercase-wallet-address}:{timestamp}
+```
+
+`signedMessage` is the Base64-encoded signature, not the message text or an unlock challenge token. Lowercase the wallet address inside the signed message and send the same timestamp value used when signing. The wallet's public Stellar address is used to verify the signature; never send the signing key. Put these fields in the JSON body for POST and DELETE. For GET, send them as URL-encoded query parameters; use a query encoder such as `URLSearchParams` so Base64 characters are preserved.
+
+Administrators may instead send `Authorization: Bearer <ADMIN_ROTATION_TOKEN>` and the target `walletAddress` (query parameter for GET; JSON body for POST and DELETE). The bearer value must match the server's configured, nonempty `ADMIN_ROTATION_TOKEN`. Keep this token on trusted server-side clients, not in frontend code or query strings.
+
+Unlike the general response conventions above, the shared webhook domain returns `401` for missing or invalid ownership proof, `400` for missing required fields or an invalid/blocked destination URL, and `404` when an authenticated GET has no subscription.
+
+### Register or update a webhook
 
 `POST /api/webhooks`
 
-Request body:
+Signed-owner request body (replace the illustrative values with a real wallet address and its signature):
 
 ```json
 {
   "walletAddress": "G...",
+  "timestamp": "1791120000000",
+  "signedMessage": "<base64-signature>",
   "url": "https://your-server.com/webhooks",
   "events": ["PromptPurchased", "PromptCreated"]
 }
 ```
 
-The `events` array is optional — defaults to `["PromptPurchased"]`. Only events in the supported list are accepted; unknown events are silently filtered.
+The `events` array is optional — defaults to `["PromptPurchased"]`. Only events in the supported list are accepted; unknown events are silently filtered. Destination URLs must pass the shared destination validation.
 
-Example response (201):
+Example creation response (201):
 
 ```json
 {
@@ -284,25 +302,41 @@ Example response (201):
 }
 ```
 
-**Important:** The `secret` is returned only on creation. Store it securely — you need it to verify signatures.
+Posting for a wallet that already has a subscription updates its URL and events, reactivates it, resets its failure count, and rotates its signing secret. Example update response (200):
+
+```json
+{
+  "message": "Webhook updated.",
+  "id": "6650f1...",
+  "secret": "e5f6a7b8..."
+}
+```
+
+**Important:** Both creation and update return a newly generated `secret`. Store it securely and replace the receiver's stored verification secret after every successful update. GET does not return the secret; do not rely on the previous value after an update.
 
 ### Get webhook subscription
 
-`GET /api/webhooks?walletAddress=G...`
+`GET /api/webhooks`
 
-Returns the subscription (secret excluded from response).
+Send `walletAddress`, `timestamp`, and `signedMessage` as URL-encoded query parameters for signed-owner authentication. Alternatively, send the administrator bearer header and the `walletAddress` query parameter. See [Management authentication](#management-authentication).
+
+Returns the authenticated wallet's subscription with status `200` (secret excluded from the response), or `404` if none exists.
 
 ### Delete webhook subscription
 
 `DELETE /api/webhooks`
 
-Request body:
+Signed-owner request body:
 
 ```json
 {
-  "walletAddress": "G..."
+  "walletAddress": "G...",
+  "timestamp": "1791120000000",
+  "signedMessage": "<base64-signature>"
 }
 ```
+
+Alternatively, send the administrator bearer header and a JSON body containing the target `walletAddress`. A valid request returns `200` with `{ "message": "Webhook removed." }`, including when the wallet has no subscription.
 
 ### Webhook payload format
 
@@ -330,16 +364,18 @@ Request body:
 
 ### Signature verification
 
-Verify the webhook payload using your stored secret:
+Verify the exact request body bytes using your stored secret, before parsing JSON. Do not use `JSON.stringify(req.body)` to reconstruct the signed payload: parsing and reserializing JSON can change those bytes.
 
 ```typescript
+import { Buffer } from "buffer";
 import { createHmac } from "crypto";
 
 function verifyWebhookSignature(
   secret: string,
-  body: string,
-  signature: string,
+  body: Buffer,
+  signature: unknown,
 ): boolean {
+  if (typeof signature !== "string") return false;
   const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
   if (expected.length !== signature.length) return false;
   let result = 0;
@@ -350,21 +386,32 @@ function verifyWebhookSignature(
 }
 ```
 
-Usage in an Express handler:
+Use that helper in an Express handler. Set `PROMPTHASH_WEBHOOK_SECRET` to the secret returned by subscription creation or its latest update. Register this route **before** any global `express.json()` middleware so the body remains a `Buffer`:
 
 ```typescript
-app.post("/webhooks", (req, res) => {
-  const signature = req.headers["x-prompthash-signature"];
-  const body = JSON.stringify(req.body);
+import express from "express";
 
-  if (!verifyWebhookSignature(YOUR_SECRET, body, signature)) {
+const app = express();
+const webhookSecret = process.env.PROMPTHASH_WEBHOOK_SECRET;
+if (!webhookSecret) throw new Error("PROMPTHASH_WEBHOOK_SECRET is required");
+
+app.post("/webhooks", express.raw({ type: "application/json" }), (req, res) => {
+  const signature = req.get("X-PromptHash-Signature");
+
+  if (!Buffer.isBuffer(req.body) || !verifyWebhookSignature(webhookSecret, req.body, signature)) {
     return res.status(401).json({ error: "Invalid signature" });
   }
 
-  const deliveryId = req.headers["x-prompthash-delivery"];
+  try {
+    req.body = JSON.parse(req.body.toString("utf8"));
+  } catch {
+    return res.status(400).json({ error: "Invalid JSON" });
+  }
+
+  const deliveryId = req.get("X-PromptHash-Delivery");
   // Use deliveryId for idempotency — skip if already processed
 
-  // Process the event...
+  // Validate req.body fields and process the event before acknowledging it.
   res.status(200).json({ received: true });
 });
 ```
@@ -392,3 +439,7 @@ This is critical because PromptHash retries failed deliveries, which may result 
 Webhook endpoints should handle bursts gracefully. We recommend:
 - Return 200 quickly and process asynchronously
 - Use 429 with `Retry-After` header if your system is overloaded
+
+## Adapter consolidation
+
+Serverless and Express adapters for prompt versioning and webhooks share authoritative domain services. See [api-adapter-consolidation.md](./api-adapter-consolidation.md).
