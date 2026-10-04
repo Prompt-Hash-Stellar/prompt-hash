@@ -42,7 +42,9 @@ describe("unlockPromptContent client", () => {
       );
     vi.stubGlobal("fetch", fetchMock);
 
-    const signMessage = vi.fn().mockResolvedValue({ signedMessage: "signed-by-wallet" });
+    const signMessage = vi
+      .fn()
+      .mockResolvedValue({ signedMessage: "signed-by-wallet" });
     const result = await unlockPromptContent(
       "GBUYERACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789",
       7n,
@@ -139,4 +141,184 @@ describe("unlockPromptContent client", () => {
       ),
     ).rejects.toThrow(ERROR_MESSAGES.INTEGRITY_FAILURE);
   });
+});
+
+describe("unlockPromptContent pre-sign listing gate (#239)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    hashPromptPlaintextMock.mockResolvedValue("abc123");
+  });
+
+  it("blocks wallet signing when the live quote price changed", async () => {
+    const boundQuote = {
+      promptId: "7",
+      versionIndex: 1,
+      priceStroops: "50000000",
+      asset: "native-asset",
+      seller: "GSELLER",
+      active: true,
+      termsHash: "boundhash",
+    };
+    const liveQuote = {
+      ...boundQuote,
+      priceStroops: "90000000",
+      termsHash: "livehash",
+    };
+
+    const signMessage = vi
+      .fn()
+      .mockResolvedValue({ signedMessage: "should-not-run" });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: "token-1",
+            challenge: "prompt-hash unlock:challenge",
+            expiresAt: Date.now() + 60_000,
+            nonce: "nonce-1",
+            quote: boundQuote,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ quote: liveQuote }), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      unlockPromptContent(
+        "GBUYERACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789",
+        "7",
+        signMessage,
+      ),
+    ).rejects.toMatchObject({ code: "TERMS_CHANGED" });
+
+    expect(signMessage).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("signs only after the live quote matches the bound challenge quote", async () => {
+    const expiresAt = Date.now() + 60_000;
+    vi.spyOn(Date, "now").mockReturnValue(expiresAt - 1);
+    const quote = {
+      promptId: "7",
+      versionIndex: 1,
+      priceStroops: "50000000",
+      asset: "native-asset",
+      seller: "GSELLER",
+      active: true,
+      termsHash: "samehash",
+    };
+
+    const signMessage = vi
+      .fn()
+      .mockResolvedValue({ signedMessage: "signed-by-wallet" });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: "token-1",
+            challenge: "prompt-hash unlock:challenge",
+            expiresAt,
+            nonce: "nonce-1",
+            quote,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ quote }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            promptId: "7",
+            title: "Test prompt",
+            contentHash: "abc123",
+            plaintext: "Decrypted prompt body",
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await unlockPromptContent(
+      "GBUYERACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789",
+      "7",
+      signMessage,
+    );
+
+    expect(signMessage).toHaveBeenCalledTimes(1);
+    expect(result.plaintext).toBe("Decrypted prompt body");
+  });
+
+  it.each(["challenge", "quote"] as const)(
+    "blocks signing when the challenge expires during the %s response",
+    async (expiryPhase) => {
+      const issuedAt = 1_800_000_000_000;
+      const expiresAt = issuedAt + 60_000;
+      let now = issuedAt;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const quote = {
+        promptId: "7",
+        versionIndex: 1,
+        priceStroops: "50000000",
+        asset: "native-asset",
+        seller: "GSELLER",
+        active: true,
+        termsHash: "samehash",
+      };
+      const signMessage = vi
+        .fn()
+        .mockResolvedValue({ signedMessage: "must-not-sign-expired" });
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          if (expiryPhase === "challenge") now = expiresAt + 1;
+          return new Response(
+            JSON.stringify({
+              token: "token-1",
+              challenge: "prompt-hash unlock:expired-challenge",
+              expiresAt,
+              nonce: "nonce-1",
+              quote,
+            }),
+            { status: 200 },
+          );
+        })
+        .mockImplementationOnce(async () => {
+          if (expiryPhase === "quote") now = expiresAt + 1;
+          return new Response(JSON.stringify({ quote }), { status: 200 });
+        })
+        // The original client reaches this rejection after already signing.
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              code: "CHALLENGE_EXPIRED",
+              error: "The challenge token has expired.",
+            }),
+            { status: 401 },
+          ),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(
+        unlockPromptContent(
+          "GBUYERACCOUNT1234567890ABCDEFGH1234567890ABCDEFGH123456789",
+          "7",
+          signMessage,
+        ),
+      ).rejects.toThrow(ERROR_MESSAGES.CHALLENGE_EXPIRED);
+
+      expect(signMessage).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        "/api/prompts/unlock",
+        expect.anything(),
+      );
+    },
+  );
 });
