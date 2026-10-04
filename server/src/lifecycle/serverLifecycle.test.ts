@@ -1,0 +1,334 @@
+import { spawnSync } from "child_process";
+import { readFileSync } from "fs";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
+import http from "http";
+import express from "express";
+import { ServerLifecycle, listenWithLifecycle } from "./serverLifecycle";
+
+function listenEphemeral(
+  app: express.Express,
+): Promise<{ server: http.Server; port: number }> {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (!addr || typeof addr === "string") {
+        reject(new Error("expected TCP address"));
+        return;
+      }
+      resolve({ server, port: addr.port });
+    });
+    server.on("error", reject);
+  });
+}
+
+function get(port: number, path: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    http
+      .get({ host: "127.0.0.1", port, path }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }),
+        );
+      })
+      .on("error", reject);
+  });
+}
+
+describe("ServerLifecycle", () => {
+  afterEach(() => {
+    // Ensure no leftover signal handlers from prior tests.
+    for (const signal of ["SIGTERM", "SIGINT"] as NodeJS.Signals[]) {
+      process.removeAllListeners(signal);
+    }
+  });
+
+  it("clears tracked timers on shutdown", async () => {
+    const app = express();
+    app.get("/ok", (_req, res) => res.json({ ok: true }));
+    const { server } = await listenEphemeral(app);
+
+    let ticks = 0;
+    const lifecycle = new ServerLifecycle({
+      server,
+      shutdownTimeoutMs: 2000,
+      disconnectDb: async () => undefined,
+      onForceExit: () => {
+        throw new Error("should not force-exit");
+      },
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    });
+
+    lifecycle.trackTimer(
+      setInterval(() => {
+        ticks += 1;
+      }, 20),
+    );
+    expect(lifecycle.trackedTimerCount).toBe(1);
+
+    await new Promise((r) => setTimeout(r, 50));
+    const ticksBefore = ticks;
+    expect(ticksBefore).toBeGreaterThan(0);
+
+    await lifecycle.shutdown("test-timer-cleanup");
+    expect(lifecycle.trackedTimerCount).toBe(0);
+
+    const ticksAtClear = ticks;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(ticks).toBe(ticksAtClear);
+  });
+
+  it("drains an in-flight request before closing (SIGTERM during request)", async () => {
+    const app = express();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    app.get("/slow", async (_req, res) => {
+      await gate;
+      res.json({ done: true });
+    });
+
+    const { server, port } = await listenEphemeral(app);
+    let disconnected = false;
+    const lifecycle = new ServerLifecycle({
+      server,
+      shutdownTimeoutMs: 5000,
+      disconnectDb: async () => {
+        disconnected = true;
+      },
+      onForceExit: () => {
+        throw new Error("should not force-exit");
+      },
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    });
+
+    const requestPromise = get(port, "/slow");
+    // Give the request a moment to be accepted.
+    await new Promise((r) => setTimeout(r, 30));
+
+    const shutdownPromise = lifecycle.shutdown("SIGTERM");
+    // Shutdown should be waiting on the in-flight request.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(disconnected).toBe(false);
+
+    release();
+    const result = await requestPromise;
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.body)).toEqual({ done: true });
+
+    await shutdownPromise;
+    expect(disconnected).toBe(true);
+    expect(lifecycle.isShuttingDown).toBe(true);
+
+    // New connections must be rejected after close.
+    await expect(get(port, "/slow")).rejects.toThrow();
+  });
+
+  it.each(["disconnecting", "complete"] as const)(
+    "retires timers registered after shutdown cleanup while %s",
+    async (phase) => {
+      const { server } = await listenEphemeral(express());
+      let beginDisconnect!: () => void;
+      let finishDisconnect!: () => void;
+      const disconnectStarted = new Promise<void>((resolve) => {
+        beginDisconnect = resolve;
+      });
+      const disconnectGate = new Promise<void>((resolve) => {
+        finishDisconnect = resolve;
+      });
+      const lifecycle = new ServerLifecycle({
+        server,
+        shutdownTimeoutMs: 2000,
+        disconnectDb: async () => {
+          beginDisconnect();
+          await disconnectGate;
+        },
+        onForceExit: () => {
+          throw new Error("should not force-exit");
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+
+      const shutdown = lifecycle.shutdown("late-timer-registration");
+      await disconnectStarted;
+      if (phase === "complete") {
+        finishDisconnect();
+        await shutdown;
+      }
+
+      let callbacks = 0;
+      const interval = setInterval(() => { callbacks += 1; }, 5);
+      const timeout = setTimeout(() => { callbacks += 1; }, 5);
+      try {
+        expect(lifecycle.trackTimer(interval)).toBe(interval);
+        expect(lifecycle.trackTimer(timeout)).toBe(timeout);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect({ callbacks, tracked: lifecycle.trackedTimerCount })
+          .toEqual({ callbacks: 0, tracked: 0 });
+      } finally {
+        clearInterval(interval);
+        clearTimeout(timeout);
+        finishDisconnect();
+        await shutdown;
+      }
+    },
+  );
+
+  it.each(["complete", "stalled"] as const)(
+    "keeps the shutdown deadline active for a %s disconnect in an isolated process",
+    (phase) => {
+      // Compile the actual helper with the project's TypeScript dependency, so
+      // this regression also runs on Node versions without native TS support.
+      const helper = transpileModule(
+        readFileSync(require.resolve("./serverLifecycle"), "utf8"),
+        {
+          compilerOptions: {
+            module: ModuleKind.CommonJS,
+            target: ScriptTarget.ES2020,
+          },
+        },
+      ).outputText;
+      const child = `
+        ${helper}
+        const http = require("http");
+        const write = (message) => require("fs").writeSync(1, message + "\\n");
+        const server = http.createServer((_req, res) => res.end("ok"));
+        server.listen(0, "127.0.0.1", () => {
+          const lifecycle = new exports.ServerLifecycle({
+            server,
+            shutdownTimeoutMs: 100,
+            disconnectDb: () => {
+              write("DISCONNECT_STARTED");
+              return ${phase === "stalled"} ? new Promise(() => {}) : Promise.resolve();
+            },
+            onForceExit: (code) => {
+              write("FORCE_EXIT:" + code);
+              process.exit(code);
+            },
+            logger: { info: write, warn: write, error: write },
+          });
+          lifecycle.installSignalHandlers();
+          // Windows does not deliver POSIX SIGTERM to the registered handler.
+          if (process.platform === "win32") process.emit("SIGTERM");
+          else process.kill(process.pid, "SIGTERM");
+        });
+      `;
+      const result = spawnSync(process.execPath, ["-e", child], {
+        encoding: "utf8",
+        timeout: 3000,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("DISCONNECT_STARTED");
+      expect(result.status).toBe(phase === "stalled" ? 1 : 0);
+      if (phase === "stalled") {
+        expect(result.stdout).toContain("FORCE_EXIT:1");
+        expect(result.stdout).not.toContain("shutdown complete");
+      } else {
+        expect(result.stdout).toContain("shutdown complete");
+        expect(result.stdout).not.toContain("FORCE_EXIT:");
+      }
+    },
+  );
+
+  it("force-exits when drain exceeds the shutdown timeout", async () => {
+    const app = express();
+    app.get("/hang", (_req, res) => {
+      // Never respond — keeps the connection open so server.close cannot finish.
+      void res;
+    });
+
+    const { server, port } = await listenEphemeral(app);
+
+    let forceCode: number | null = null;
+    const lifecycle = new ServerLifecycle({
+      server,
+      shutdownTimeoutMs: 150,
+      disconnectDb: async () => undefined,
+      onForceExit: (code) => {
+        forceCode = code;
+      },
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    });
+
+    // Open a hanging request so drain blocks. Swallow the expected hang-up
+    // when the force path destroys sockets.
+    const req = http.get({ host: "127.0.0.1", port, path: "/hang" });
+    const reqFinished = new Promise<void>((resolve) => {
+      req.on("error", () => resolve());
+      req.on("close", () => resolve());
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    await lifecycle.shutdown("force-timeout");
+    expect(forceCode).toBe(1);
+
+    req.destroy();
+    await reqFinished;
+  });
+
+  it("treats repeated shutdown signals as idempotent", async () => {
+    const app = express();
+    app.get("/ok", (_req, res) => res.json({ ok: true }));
+    const { server } = await listenEphemeral(app);
+
+    let disconnectCalls = 0;
+    const lifecycle = new ServerLifecycle({
+      server,
+      shutdownTimeoutMs: 2000,
+      disconnectDb: async () => {
+        disconnectCalls += 1;
+        await new Promise((r) => setTimeout(r, 40));
+      },
+      onForceExit: () => {
+        throw new Error("should not force-exit");
+      },
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    });
+
+    const first = lifecycle.shutdown("SIGTERM");
+    const second = lifecycle.shutdown("SIGINT");
+    const third = lifecycle.shutdown("SIGTERM");
+
+    await Promise.all([first, second, third]);
+    expect(disconnectCalls).toBe(1);
+  });
+
+  it("listenWithLifecycle honors host/port and installs signal handlers", async () => {
+    const app = express();
+    app.get("/health/live", (_req, res) => res.json({ status: "ok" }));
+
+    let listenedPort = 0;
+    const { server, lifecycle } = listenWithLifecycle(app, {
+      port: 0, // ephemeral — OS assigns
+      host: "127.0.0.1",
+      shutdownTimeoutMs: 2000,
+      installSignals: true,
+      onListening: (p) => {
+        listenedPort = p;
+      },
+      disconnectDb: async () => undefined,
+      onForceExit: () => undefined,
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.on("listening", () => resolve());
+      server.on("error", reject);
+      if (server.listening) resolve();
+    });
+
+    const addr = server.address();
+    expect(addr && typeof addr !== "string" ? addr.port : 0).toBeGreaterThan(0);
+    // onListening may see port 0 when the OS assigns later; prefer address().
+    const port = typeof addr === "object" && addr ? addr.port : listenedPort;
+    const res = await get(port, "/health/live");
+    expect(res.status).toBe(200);
+
+    await lifecycle.shutdown("test-end");
+  });
+});
