@@ -6,6 +6,7 @@
  */
 
 import type { PromptRecord } from "../stellar/promptHashClient";
+import { sortPromptsBy } from "./promptOrdering";
 
 export type StatusFilter = "all" | "unlocked" | "locked";
 export type SortOption = "newest" | "oldest" | "price-high" | "price-low";
@@ -49,12 +50,12 @@ export function filterLibraryPrompts(
 
     // Search query filter (matches title, category, creator, or preview text)
     if (normalizedQuery) {
-      const titleMatch = prompt.title.toLowerCase().includes(normalizedQuery);
-      const categoryMatch = prompt.category.toLowerCase().includes(normalizedQuery);
-      const creatorMatch = (prompt.creator ?? "").toLowerCase().includes(normalizedQuery);
-      const previewMatch = prompt.previewText.toLowerCase().includes(normalizedQuery);
-
-      if (!titleMatch && !categoryMatch && !creatorMatch && !previewMatch) {
+      if (
+        !prompt.title.toLowerCase().includes(normalizedQuery) &&
+        !prompt.category.toLowerCase().includes(normalizedQuery) &&
+        !(prompt.creator ?? "").toLowerCase().includes(normalizedQuery) &&
+        !prompt.previewText.toLowerCase().includes(normalizedQuery)
+      ) {
         return false;
       }
     }
@@ -62,28 +63,7 @@ export function filterLibraryPrompts(
     return true;
   });
 
-  const sorted = [...filtered];
-  switch (sortOption) {
-    case "oldest":
-      sorted.sort((a, b) => Number(a.id - b.id));
-      break;
-    case "price-high":
-      sorted.sort((a, b) =>
-        a.priceStroops > b.priceStroops ? -1 : a.priceStroops < b.priceStroops ? 1 : 0,
-      );
-      break;
-    case "price-low":
-      sorted.sort((a, b) =>
-        a.priceStroops < b.priceStroops ? -1 : a.priceStroops > b.priceStroops ? 1 : 0,
-      );
-      break;
-    case "newest":
-    default:
-      sorted.sort((a, b) => Number(b.id - a.id));
-      break;
-  }
-
-  return sorted;
+  return sortPromptsBy(filtered, sortOption);
 }
 
 /**

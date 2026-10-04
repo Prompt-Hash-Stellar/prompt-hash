@@ -26,6 +26,7 @@ import {
   unsavePromptListing,
 } from "@/lib/prompts/library";
 import { stroopsToXlmString, xlmToStroops } from "@/lib/stellar/format";
+import { sortPromptsBy } from "@/lib/prompts/promptOrdering";
 import { PromptCard } from "./PromptCard";
 import { PromptModal } from "./PromptModal";
 import { NoResultsSuggestions } from "./NoResultsSuggestions";
@@ -140,24 +141,6 @@ const FetchAllPrompts = ({
     },
   });
 
-  // Infinite scroll observer
-  useEffect(() => {
-    if (!ENABLE_INFINITE_SCROLL || !loadMoreRef.current) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const target = entries[0];
-        if (target.isIntersecting && currentPage < totalPages) {
-          setCurrentPage((prev) => prev + 1);
-        }
-      },
-      { threshold: 0.1, rootMargin: "100px" },
-    );
-
-    observer.observe(loadMoreRef.current);
-    return () => observer.disconnect();
-  }, [currentPage]);
-
   const accessQueries = useQueries({
     queries: (address ? (promptsQuery.data ?? []) : []).map((prompt) => ({
       queryKey: ["prompt-access", address, prompt.id.toString()],
@@ -248,20 +231,7 @@ const FetchAllPrompts = ({
       prompts = rankPrompts(prompts, searchQuery, selectedCategory);
     }
 
-    switch (sortBy) {
-      case "price-low":
-        return [...prompts].sort((a, b) =>
-          a.priceStroops < b.priceStroops ? -1 : 1,
-        );
-      case "price-high":
-        return [...prompts].sort((a, b) =>
-          a.priceStroops > b.priceStroops ? -1 : 1,
-        );
-      case "sales":
-        return [...prompts].sort((a, b) => b.salesCount - a.salesCount);
-      default:
-        return [...prompts].sort((a, b) => Number(b.id - a.id));
-    }
+    return sortPromptsBy(prompts, sortBy);
   }, [
     priceRange,
     promptsQuery.data,
@@ -285,6 +255,24 @@ const FetchAllPrompts = ({
         (currentPage - 1) * ITEMS_PER_PAGE,
         currentPage * ITEMS_PER_PAGE,
       );
+
+  // Infinite scroll observer
+  useEffect(() => {
+    if (!ENABLE_INFINITE_SCROLL || !loadMoreRef.current) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const target = entries[0];
+        if (target.isIntersecting && currentPage < totalPages) {
+          setCurrentPage((prev) => prev + 1);
+        }
+      },
+      { threshold: 0.1, rootMargin: "100px" },
+    );
+
+    observer.observe(loadMoreRef.current);
+    return () => observer.disconnect();
+  }, [currentPage, totalPages, promptsQuery.isLoading, promptsQuery.isError]);
 
   useEffect(() => {
     setCurrentPage(1);
