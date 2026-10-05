@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createRequire } from "node:module";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../../server/src/models/Appeal", () => ({
   default: {
@@ -12,19 +13,38 @@ vi.mock("../../server/src/models/Appeal", () => ({
 }));
 
 import Appeal from "../../server/src/models/Appeal";
+import router from "../../server/src/routes/appealRoutes";
+
 import {
   createAppeal,
   getAppeal,
   listAppeals,
   updateAppealStatus,
   getAppealStats,
+  APPEAL_REVIEW_AUDIENCE,
 } from "../../server/src/controllers/appealController";
+
+import { signAdminPrincipalToken } from "../../server/src/auth/adminPrincipal";
+
+const requireServer = createRequire(new URL("../../server/package.json", import.meta.url));
+const express = requireServer("express");
+const request = requireServer("supertest");
+const app = express().use(express.json()).use("/api", router);
+
+const secret = "local-test-only-principal-secret-242-appeal";
+const reviewer = "Maintainer:CaseSensitive";
+function credential(options: Record<string, any> = {}) {
+  return signAdminPrincipalToken({
+    sub: reviewer, roles: ["admin"], secret, aud: APPEAL_REVIEW_AUDIENCE, ...options,
+  });
+}
 
 function mockReq(overrides: Record<string, unknown> = {}) {
   return {
     body: {},
     params: {},
     query: {},
+    get: () => undefined,
     ...overrides,
   } as any;
 }
@@ -51,21 +71,18 @@ describe("createAppeal", () => {
   it("creates an appeal with valid fields", async () => {
     const mockAppeal = { _id: "appeal1", promptId: "42", status: "flagged" };
     (Appeal.create as any).mockResolvedValue(mockAppeal);
-    const req = mockReq({
-      body: {
-        promptId: "42",
-        reporterAddress: "GABC",
-        creatorAddress: "GXYZ",
-        similarityScore: 0.95,
-        contentCommitment: "abc123",
-        fingerprintHash: "def456",
-      },
-    });
-    const res = mockRes();
-    await createAppeal(req, res);
+    const body = {
+      promptId: "42",
+      reporterAddress: "GABC",
+      creatorAddress: "GXYZ",
+      similarityScore: 0.95,
+      contentCommitment: "abc123",
+      fingerprintHash: "def456",
+    };
+    const response = await request(app).post("/api/appeals").send(body);
     expect(Appeal.create).toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(201);
-    expect(res.json).toHaveBeenCalledWith(mockAppeal);
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(mockAppeal);
   });
 });
 
@@ -89,12 +106,44 @@ describe("getAppeal", () => {
 });
 
 describe("updateAppealStatus", () => {
+  beforeEach(() => vi.stubEnv("ADMIN_PRINCIPAL_SECRET", secret));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("rejects anonymous review decisions before storage", async () => {
+    (Appeal.findByIdAndUpdate as any).mockResolvedValue({ _id: "abc", status: "upheld" });
+    const response = await request(app).patch("/api/appeals/abc").send({
+      status: "upheld",
+      roles: ["admin"],
+      reviewerDecision: {
+        reviewerAddress: "forged-reviewer",
+        decision: "upheld",
+        reasonCode: "caller-controlled",
+      },
+    });
+    expect(response.status).toBe(401);
+    expect(Appeal.findById).not.toHaveBeenCalled();
+    expect(Appeal.findByIdAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["wrong audience", { aud: "prompt-hash:similarity-override" }, 401],
+    ["insufficient role", { roles: ["report_reviewer"] }, 403],
+  ])("rejects %s before storage", async (_label, options, status) => {
+    const response = await request(app).patch("/api/appeals/abc")
+      .set("Authorization", `Bearer ${credential(options as Record<string, any>)}`)
+      .send({ status: "upheld" });
+    expect(response.status).toBe(status);
+    expect(Appeal.findById).not.toHaveBeenCalled();
+    expect(Appeal.findByIdAndUpdate).not.toHaveBeenCalled();
+  });
+
   it("updates status to notified", async () => {
     const updated = { _id: "abc", status: "notified", notifiedAt: new Date() };
     (Appeal.findByIdAndUpdate as any).mockResolvedValue(updated);
     const req = mockReq({
       params: { id: "abc" },
       body: { status: "notified" },
+      get: () => `Bearer ${credential()}`,
     });
     const res = mockRes();
     await updateAppealStatus(req, res);
@@ -102,11 +151,74 @@ describe("updateAppealStatus", () => {
     expect(res.json).toHaveBeenCalledWith(updated);
   });
 
+  it("appends a review decision while retaining prior history and advancing status", async () => {
+    const previousDecision = {
+      reviewerAddress: "GPRIOR",
+      decision: "upheld",
+      reasonCode: "original-review",
+    };
+    const incomingDecision = {
+      reviewerAddress: "GNEXT",
+      decision: "rejected",
+      reasonCode: "false-positive",
+      evidenceHash: "review-evidence",
+      decisionVersion: 2,
+      conflictOfInterest: false,
+    };
+    const stored = {
+      _id: "507f1f77bcf86cd799439011",
+      status: "flagged",
+      reviewerDecisions: [previousDecision],
+    };
+
+    const { default: actualAppeal } = await vi.importActual<
+      typeof import("../../server/src/models/Appeal")
+    >("../../server/src/models/Appeal");
+    const originalCollectionUpdate = actualAppeal.collection.findOneAndUpdate;
+
+    try {
+      // Use the actual schema, query casting and validators. Replace only the
+      // collection call; a status-only write must not fabricate an audit entry.
+      actualAppeal.collection.findOneAndUpdate = async (_filter: any, mutation: any) => {
+        const next = { ...stored, ...mutation.$set };
+        if (mutation.$push?.reviewerDecisions) {
+          next.reviewerDecisions = [
+            ...stored.reviewerDecisions,
+            mutation.$push.reviewerDecisions,
+          ];
+        }
+        return next;
+      };
+      (Appeal.findByIdAndUpdate as any).mockImplementationOnce(
+        (...args: any[]) => actualAppeal.findByIdAndUpdate(...args),
+      );
+      const response = await request(app).patch(`/api/appeals/${stored._id}`)
+        .set("Authorization", `Bearer ${credential()}`)
+        .send({ reviewerDecision: incomingDecision });
+
+      expect(response.status).toBe(200);
+      expect(Appeal.findByIdAndUpdate).toHaveBeenCalledTimes(1);
+      const returned = response.body;
+      expect(returned.error).toBeUndefined();
+      expect(returned.status).toBe("reviewed");
+      expect(Number.isNaN(Date.parse(returned.reviewedAt))).toBe(false);
+      expect(returned.reviewerDecisions).toEqual([
+        previousDecision,
+        { ...incomingDecision, reviewerAddress: reviewer, decidedAt: expect.any(String) },
+      ]);
+      expect(Number.isNaN(Date.parse(returned.reviewerDecisions[1].decidedAt))).toBe(false);
+      expect(stored.reviewerDecisions).toEqual([previousDecision]);
+    } finally {
+      actualAppeal.collection.findOneAndUpdate = originalCollectionUpdate;
+    }
+  });
+
   it("returns 404 for unknown id on update", async () => {
     (Appeal.findByIdAndUpdate as any).mockResolvedValue(null);
     const req = mockReq({
       params: { id: "nonexistent" },
       body: { status: "upheld" },
+      get: () => `Bearer ${credential()}`,
     });
     const res = mockRes();
     await updateAppealStatus(req, res);
@@ -163,3 +275,4 @@ describe("getAppealStats", () => {
     );
   });
 });
+

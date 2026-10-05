@@ -20,7 +20,7 @@ import Prompt from "../models/Prompt";
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ")
     .split(/\s+/)
     .filter(Boolean);
 }
@@ -64,45 +64,58 @@ export function cosineSimilarity(a: Map<string, number>, b: Map<string, number>)
 // ---------------------------------------------------------------------------
 
 export function levenshteinRatio(a: string, b: string): number {
-  const m = a.length;
-  const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
-    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
-  );
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  if (a.length === 0 || b.length === 0) return 0;
 
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1];
+  // The score is symmetric. Keep only two rows along the shorter input so
+  // a short draft compared with a long listing does not allocate their product.
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  let previous = Array.from({ length: shorter.length + 1 }, (_, j) => j);
+  let current = new Array<number>(shorter.length + 1);
+
+  for (let i = 1; i <= longer.length; i++) {
+    current[0] = i;
+    for (let j = 1; j <= shorter.length; j++) {
+      if (longer[i - 1] === shorter[j - 1]) {
+        current[j] = previous[j - 1];
       } else {
-        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+        current[j] = 1 + Math.min(previous[j], current[j - 1], previous[j - 1]);
       }
     }
+    const completed = current;
+    current = previous;
+    previous = completed;
   }
 
-  const distance = dp[m][n];
-  const maxLen = Math.max(m, n);
-  return maxLen === 0 ? 1 : 1 - distance / maxLen;
+  return 1 - previous[shorter.length] / maxLen;
 }
 
 // ---------------------------------------------------------------------------
 // Score computation
 // ---------------------------------------------------------------------------
 
+function createSimilarityScorer(text: string): (candidate: string) => number {
+  const a = text.toLowerCase().trim();
+  let tfA: Map<string, number> | undefined;
+
+  return (candidate) => {
+    const b = candidate.toLowerCase().trim();
+    if (a.length < 50 || b.length < 50) {
+      return levenshteinRatio(a, b);
+    }
+
+    // A scan compares one unchanged draft with many candidates. Build its
+    // vector once, lazily, so short-text comparisons keep their existing path.
+    tfA ??= buildTermFrequency(tokenize(a));
+    const tfB = buildTermFrequency(tokenize(b));
+    return cosineSimilarity(tfA, tfB);
+  };
+}
+
 export function computeSimilarityScore(textA: string, textB: string): number {
-  const norm = (s: string) => s.toLowerCase().trim();
-  const a = norm(textA);
-  const b = norm(textB);
-
-  if (a.length < 50 || b.length < 50) {
-    return levenshteinRatio(a, b);
-  }
-
-  const tokensA = tokenize(a);
-  const tokensB = tokenize(b);
-  const tfA = buildTermFrequency(tokensA);
-  const tfB = buildTermFrequency(tokensB);
-  return cosineSimilarity(tfA, tfB);
+  return createSimilarityScorer(textA)(textB);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,9 +166,10 @@ export async function scanForSimilaritySync(
   let maxScore = 0;
   let mostSimilarId: string | null = null;
 
+  const scoreCandidate = createSimilarityScorer(content);
   for (const prompt of existing) {
     const candidateText = `${prompt.title ?? ""} ${prompt.content ?? ""}`;
-    const score = computeSimilarityScore(content, candidateText);
+    const score = scoreCandidate(candidateText);
     if (score > maxScore) {
       maxScore = score;
       mostSimilarId = prompt.onChainId ?? null;
@@ -203,18 +217,244 @@ export async function scanForSimilaritySync(
  */
 export async function scanForSimilarity(
   onChainId: string,
-  _content?: string, // ignored, fingerprint generated internally
+  content?: string,
 ): Promise<SimilarityResult> {
-  // Import here to avoid circular dependency
+  // Publish-time / test path: when plaintext is provided, run the synchronous
+  // scan so callers (and the sell-page gate) get an immediate decision.
+  if (typeof content === "string" && content.length > 0) {
+    return scanForSimilaritySync(onChainId, content);
+  }
+
+  // Post-index path: enqueue a retryable fingerprint-based job (Issue #157).
   const { enqueueSimilarityScan } = await import("./similarityJobQueue.js");
+  await enqueueSimilarityScan(onChainId);
 
-  // Enqueue the scan (non-blocking)
-  const jobId = await enqueueSimilarityScan(onChainId);
-
-  // Return pending status for backward compatibility
   return {
-    flag: "clean", // placeholder until scan completes
+    flag: "clean", // placeholder until the async scan completes
     score: 0,
     similarTo: null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Publication decisions (Issue #242)
+// Map detection flags → allow / review / block for the sell/publish gate.
+// ---------------------------------------------------------------------------
+
+export type PublicationDecision = "allow" | "review" | "block";
+
+export const PUBLICATION_THRESHOLDS = {
+  /** score >= BLOCK → block publication */
+  BLOCK: SIMILARITY_THRESHOLDS.HIGHLY_SIMILAR,
+  /** score >= REVIEW && < BLOCK → hold for review */
+  REVIEW: SIMILARITY_THRESHOLDS.SUSPICIOUS,
+} as const;
+
+export function decidePublication(score: number): PublicationDecision {
+  if (score >= PUBLICATION_THRESHOLDS.BLOCK) return "block";
+  if (score >= PUBLICATION_THRESHOLDS.REVIEW) return "review";
+  return "allow";
+}
+
+export function flagToDecision(flag: SimilarityFlag): PublicationDecision {
+  switch (flag) {
+    case "highly_similar":
+      return "block";
+    case "suspicious":
+      return "review";
+    default:
+      return "allow";
+  }
+}
+
+export interface CreatorFeedback {
+  decision: PublicationDecision;
+  title: string;
+  summary: string;
+  actions: string[];
+  scorePercent: number;
+  similarTo: string | null;
+}
+
+export function buildCreatorFeedback(
+  decision: PublicationDecision,
+  score: number,
+  similarTo: string | null,
+): CreatorFeedback {
+  const scorePercent = Math.round(score * 100);
+  const similarRef = similarTo ? `existing prompt #${similarTo}` : "an existing listing";
+
+  if (decision === "block") {
+    return {
+      decision,
+      title: "Publication blocked — high similarity detected",
+      summary: `This draft is ~${scorePercent}% similar to ${similarRef}. High-risk duplicates cannot be published until the content is differentiated or a maintainer overrides the block.`,
+      actions: [
+        "Rewrite unique sections (instructions, examples, constraints) so the wording diverges from the matched listing.",
+        "Avoid copying titles or boilerplate from popular prompts; keep structure if needed but change the substance.",
+        "If this is a false positive, open an appeal from My Prompts — maintainers can override with an audited decision.",
+      ],
+      scorePercent,
+      similarTo,
+    };
+  }
+
+  if (decision === "review") {
+    return {
+      decision,
+      title: "Sent to review — elevated similarity",
+      summary: `This draft is ~${scorePercent}% similar to ${similarRef}. You can still submit, but the listing stays in review until a maintainer clears it.`,
+      actions: [
+        "Consider revising overlapping phrases before submitting to speed up review.",
+        "Add a short note in your appeal/response explaining intentional similarity (e.g. shared template, co-authored series).",
+        "Expect a delay before the listing appears as fully published.",
+      ],
+      scorePercent,
+      similarTo,
+    };
+  }
+
+  return {
+    decision,
+    title: "Similarity check passed",
+    summary: "No high-risk overlap with existing listings. You can publish.",
+    actions: [],
+    scorePercent,
+    similarTo: null,
+  };
+}
+
+export interface PublishSimilarityResult extends SimilarityResult {
+  decision: PublicationDecision;
+  feedback: CreatorFeedback;
+  overridden?: boolean;
+}
+
+/**
+ * Pure evaluation against an in-memory candidate list (no DB).
+ * Used by tests and by the publish-check endpoint after loading candidates.
+ */
+export function evaluatePublishSimilarity(
+  content: string,
+  candidates: Array<{ onChainId?: string | null; title?: string | null; content?: string | null }>,
+): PublishSimilarityResult {
+  let maxScore = 0;
+  let mostSimilarId: string | null = null;
+
+  const scoreCandidate = createSimilarityScorer(content);
+  for (const prompt of candidates) {
+    const candidateText = `${prompt.title ?? ""} ${prompt.content ?? ""}`;
+    const score = scoreCandidate(candidateText);
+    if (score > maxScore) {
+      maxScore = score;
+      mostSimilarId = prompt.onChainId ?? null;
+    }
+  }
+
+  const flag = classifyScore(maxScore);
+  const decision = decidePublication(maxScore);
+  const similarTo = decision === "allow" ? null : mostSimilarId;
+  const feedback = buildCreatorFeedback(decision, maxScore, similarTo);
+
+  return { flag, score: maxScore, similarTo, decision, feedback };
+}
+
+/**
+ * Pre-publish gate: compare draft text to indexed prompts without requiring
+ * an on-chain id yet. Optionally exclude a prompt (edits / republication).
+ */
+export async function checkPublishSimilarity(
+  content: string,
+  options: { excludeOnChainId?: string } = {},
+): Promise<PublishSimilarityResult> {
+  const filter =
+    options.excludeOnChainId != null
+      ? { onChainId: { $ne: options.excludeOnChainId } }
+      : {};
+
+  const existing = await Prompt.find(filter, {
+    onChainId: 1,
+    content: 1,
+    title: 1,
+  }).lean();
+
+  return evaluatePublishSimilarity(content, existing);
+}
+
+// ---------------------------------------------------------------------------
+// Maintainer override audit (Issue #242)
+// ---------------------------------------------------------------------------
+
+export interface SimilarityOverrideRecord {
+  actorAddress: string;
+  previousDecision: PublicationDecision;
+  newDecision: PublicationDecision;
+  reason: string;
+  score: number;
+  similarTo: string | null;
+  promptId: string;
+  at: string; // ISO
+  decisionVersion: number;
+}
+
+export function applyMaintainerOverride(params: {
+  promptId: string;
+  actorAddress: string;
+  previousDecision: PublicationDecision;
+  newDecision: PublicationDecision;
+  reason: string;
+  score: number;
+  similarTo?: string | null;
+  previousVersion?: number;
+}): SimilarityOverrideRecord {
+  const reason = params.reason?.trim();
+  if (!reason) {
+    throw new Error("Override reason is required");
+  }
+  if (!params.actorAddress?.trim()) {
+    throw new Error("Override actorAddress is required");
+  }
+  if (params.previousDecision === params.newDecision) {
+    throw new Error("Override must change the publication decision");
+  }
+
+  return {
+    actorAddress: params.actorAddress.trim().toLowerCase(),
+    previousDecision: params.previousDecision,
+    newDecision: params.newDecision,
+    reason,
+    score: params.score,
+    similarTo: params.similarTo ?? null,
+    promptId: params.promptId,
+    at: new Date().toISOString(),
+    decisionVersion: (params.previousVersion ?? 1) + 1,
+  };
+}
+
+/**
+ * Apply an override to a scored result (e.g. after maintainer clears a block).
+ * Returns a new PublishSimilarityResult with updated decision/feedback and
+ * overridden=true. Does not mutate the input.
+ */
+export function withOverride(
+  result: PublishSimilarityResult,
+  override: SimilarityOverrideRecord,
+): PublishSimilarityResult {
+  const decision = override.newDecision;
+  const flag: SimilarityFlag =
+    decision === "block"
+      ? "highly_similar"
+      : decision === "review"
+        ? "suspicious"
+        : "clean";
+  const similarTo = decision === "allow" ? null : result.similarTo;
+  return {
+    flag,
+    score: result.score,
+    similarTo,
+    decision,
+    feedback: buildCreatorFeedback(decision, result.score, similarTo),
+    overridden: true,
+  };
+}
+

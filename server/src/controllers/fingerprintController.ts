@@ -12,8 +12,22 @@ import {
   SUPPORTED_ALGORITHMS,
   FINGERPRINT_ALGORITHM_VERSION,
 } from "../services/fingerprint";
-import Prompt from "../models/Prompt";
-import { scanForSimilarity } from "../services/similarityDetection";
+import {
+  scanForSimilarity,
+  checkPublishSimilarity,
+} from "../services/similarityDetection";
+import { ADMIN_ROLE, AdminAuthError, authorizeAdminPrincipal } from "../auth/adminPrincipal";
+import { overridePromptSimilarity, SimilarityOverrideError } from "../services/similarityOverride";
+import {
+  overridePublicationReview,
+  PublicationReviewError,
+  requestPublicationReview,
+} from "../services/publicationReview";
+
+export const SIMILARITY_OVERRIDE_AUDIENCE = "prompt-hash:similarity-override";
+export const SIMILARITY_SCAN_AUDIENCE = "prompt-hash:similarity-scan";
+export const PUBLICATION_REVIEW_AUDIENCE = "prompt-hash:publication-review";
+
 
 export async function computeFingerprint(req: Request, res: Response) {
   try {
@@ -77,13 +91,22 @@ export async function compareSimhash(req: Request, res: Response) {
 
 export async function scanSimilarity(req: Request, res: Response) {
   try {
-    const { promptId, text } = req.body;
-    if (!promptId || !text) {
-      return res.status(400).json({ error: "promptId and text are required" });
+    // This scan rewrites an indexed prompt's moderation evidence. The public
+    // draft comparison uses checkPublishSimilarityHandler and does not write.
+    authorizeAdminPrincipal(req.get("authorization"), {
+      expectedAud: SIMILARITY_SCAN_AUDIENCE,
+      requiredRoles: [ADMIN_ROLE],
+    });
+    const { promptId, text } = req.body ?? {};
+    if (typeof promptId !== "string" || !promptId.trim() || typeof text !== "string" || !text.trim()) {
+      return res.status(400).json({ error: "promptId and text must be non-empty strings" });
     }
     const result = await scanForSimilarity(promptId, text);
     return res.json(result);
   } catch (err) {
+    if (err instanceof AdminAuthError) {
+      return res.status(err.code === "forbidden" ? 403 : 401).json({ error: err.message, code: err.code });
+    }
     const message = err instanceof Error ? err.message : "Internal error";
     return res.status(500).json({ error: message });
   }
@@ -115,4 +138,87 @@ export async function normalizeText(req: Request, res: Response) {
 
 export async function listAlgorithms(_req: Request, res: Response) {
   return res.json({ algorithms: SUPPORTED_ALGORITHMS, currentVersion: FINGERPRINT_ALGORITHM_VERSION });
+}
+
+export async function checkPublishSimilarityHandler(req: Request, res: Response) {
+  try {
+    const { title, content, text, excludeOnChainId } = req.body ?? {};
+    const body = typeof content === "string" ? content : typeof text === "string" ? text : "";
+    const titleStr = typeof title === "string" ? title : "";
+    const combined = `${titleStr} ${body}`.trim();
+    if (!combined) {
+      return res.status(400).json({ error: "title and/or content (or text) is required" });
+    }
+    const result = await checkPublishSimilarity(combined, {
+      excludeOnChainId:
+        typeof excludeOnChainId === "string" ? excludeOnChainId : undefined,
+    });
+    return res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Internal error";
+    return res.status(500).json({ error: message });
+  }
+}
+
+export async function requestPublicationReviewHandler(req: Request, res: Response) {
+  try {
+    const result = await requestPublicationReview(req.body ?? {});
+    return res.json(result);
+  } catch (err) {
+    if (err instanceof PublicationReviewError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    return res.status(500).json({ error: "Unable to evaluate publication review" });
+  }
+}
+
+export async function overridePublicationReviewDecision(req: Request, res: Response) {
+  try {
+    // Authenticate before validating the requested mutation or reading review state.
+    const principal = authorizeAdminPrincipal(req.get("authorization"), {
+      expectedAud: PUBLICATION_REVIEW_AUDIENCE,
+      requiredRoles: [ADMIN_ROLE],
+    });
+    const result = await overridePublicationReview(
+      req.params.id,
+      req.body ?? {},
+      principal.sub,
+    );
+    return res.json(result);
+  } catch (err) {
+    if (err instanceof AdminAuthError) {
+      return res.status(err.code === "forbidden" ? 403 : 401).json({
+        error: err.message,
+        code: err.code,
+      });
+    }
+    if (err instanceof PublicationReviewError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    return res.status(500).json({ error: "Unable to update publication review" });
+  }
+}
+
+export async function overrideSimilarityDecision(req: Request, res: Response) {
+  try {
+    // Authenticate before validating input or looking up any prompt/appeal.
+    const principal = authorizeAdminPrincipal(req.get("authorization"), {
+      expectedAud: SIMILARITY_OVERRIDE_AUDIENCE,
+      requiredRoles: [ADMIN_ROLE],
+    });
+    const { promptId, newDecision, reason, appealId } = req.body ?? {};
+    const result = await overridePromptSimilarity(
+      { promptId, newDecision, reason, appealId },
+      principal.sub,
+    );
+    return res.json(result);
+  } catch (err) {
+    if (err instanceof AdminAuthError) {
+      return res.status(err.code === "forbidden" ? 403 : 401).json({ error: err.message, code: err.code });
+    }
+    if (err instanceof SimilarityOverrideError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    return res.status(500).json({ error: "Unable to persist similarity override" });
+  }
 }
