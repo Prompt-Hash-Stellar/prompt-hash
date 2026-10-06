@@ -176,3 +176,109 @@ staging, production):
 | --- | --- | --- |
 | `ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API | `https://app.example.com,https://staging.example.com` |
 | `TRUSTED_PROXY_HOPS` | Number of trusted reverse-proxy hops in front of the server | `1` |
+
+---
+
+## Prompt Marketplace Abuse Reports (#241)
+
+Users can report stolen, harmful, broken, or malicious marketplace prompts.
+Reporting is off-chain moderation data and does **not** change on-chain access
+control.
+
+### Evidence capture (references only)
+
+| Kind | Accepted `ref` shape |
+| --- | --- |
+| `content_hash` / `screenshot_hash` | Hex digest, 32–128 chars |
+| `ipfs_cid` | CIDv0 (`Qm…`) or CIDv1 (`bafy…` / `bafk…`) |
+| `url_ref` | Absolute `https://` URL, including valid ports and IPv6 hosts; no credentials |
+| `tx_hash` | 64-char hex digest |
+
+Rules enforced in `src/lib/reports/abuseEvidence.ts` and
+`server/src/services/abuseReports.ts`:
+
+- Max **5** evidence items; `ref` ≤ 512 chars; optional `note` ≤ 200 chars
+- Reject `data:` / `javascript:` schemes, credentialed URLs, emails, private-key
+  material, raw base64 blobs, and free-text dumps
+- Server logs only `{ reportId, promptId, reason, evidenceCount, redacted reporter }`
+  — never description or evidence notes
+
+### Reporter privacy
+
+`reporterPrivate` defaults to `true` and is stored with the report. The supplied
+wallet is stored for duplicate detection and authorized triage. The flag does
+not mask the wallet in the current private report queue:
+
+| Caller of `GET /api/prompts/reports` | Reporter wallet visibility |
+| --- | --- |
+| Verified `admin` | Full stored `reporterAddress`, including reports with `reporterPrivate: true` |
+| Verified `report_reviewer` | The same full stored `reporterAddress`; status changes still require `admin` |
+| Missing/invalid principal or a principal without a permitted role | No report-list response; the authorization gate returns `401` or `403` |
+
+The [controller](../server/src/controllers/controllers.ts) uses the same full
+report serialization for both authorized reader roles. Grant `report_reviewer`
+only to operators permitted to see reporter identities; it is not a redacted
+queue role, and `reporterPrivate` does not change that access boundary.
+
+Successful submission logs use `redactReporterAddress` to mask the wallet
+(`ABCD…WXYZ`, or `***` for values no longer than eight characters) and omit
+free-form descriptions and evidence notes. This log masking is separate from
+the authorized queue response.
+
+### Moderation status machine
+
+```
+pending ──────────► investigating ──────────► resolved
+   │                      │                      │
+   ├──────────────────────┼──────────────────────┘
+   │                      │
+   └──────────────────────┴──────────────────► dismissed
+
+Terminal → investigating is the only reopen path.
+```
+
+Each transition appends `{ from, to, actor, notes?, at }` to `statusHistory`.
+Duplicate open reports (`pending` / `investigating`) for the same
+`(promptId, reporterAddress, reason)` are rejected with `409`.
+
+### API
+
+| Method           | Path                                      | Who                                                                                 |
+| ---------------- | ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| `POST`           | `/api/prompts/reports`                    | Off-chain submission; supplied reporter wallet is not authenticated by this handler |
+| `GET`            | `/api/prompts/reports`                    | Verified principal with `admin` or `report_reviewer` role                           |
+| `PATCH` / `POST` | `/api/prompts/reports/:id` / `.../status` | Verified principal with `admin` role                                                |
+
+Report listing and status changes require `Authorization: Bearer <token>` with
+a signed principal whose audience is `prompt-hash:report-review`. Both handlers
+verify the signature, expiry, revocation, audience, and role **before database
+access**. Missing or invalid credentials return `401`; an authenticated principal
+without the required role returns `403`. Tokens expire at `exp`, including the
+exact expiry instant. GET retains its existing array response for authorized
+reviewers.
+
+Configure a server-only `ADMIN_PRINCIPAL_SECRET` of at least 32 characters. A
+trusted issuer with that secret can use `signAdminPrincipalToken` from
+`server/src/auth/adminPrincipal.ts`, providing the operator `sub`, the authorized
+roles, and the report-review audience. Tokens default to a 15-minute lifetime.
+The signing secret must never be sent to the browser. The existing report client
+sends the issued token stored under `adminToken` as its bearer credential; it
+propagates `401` and `403` responses to the queue's existing error state rather
+than turning a rejected read into an empty report list.
+
+Revocations use `jti`: `ADMIN_PRINCIPAL_REVOKED_JTIS` seeds the registry at process
+start, and `revokeAdminPrincipalToken` updates the current process. Distribute
+revocations to every server process or rotate the shared signing secret to
+invalidate all outstanding tokens. The in-process registry is not a distributed
+revocation service.
+
+Public wallet addresses, `ADMIN_API_KEY`, the former default key, body secrets,
+and client-supplied `actor` / `adminAddress` fields do not authorize moderation.
+Status changes record the exact verified `sub` in `statusHistory.actor` and
+`moderatedBy`, preserving case and spelling through the helper and database
+schema. Existing audit rows are not rewritten. Reporter normalization used for
+duplicate detection remains unchanged; proof of the submitted reporter wallet's
+identity is a separate, unimplemented boundary in the submission handler.
+
+UI entry points: `ReportDialog` on prompt pages; maintainer queue at
+`src/pages/admin/Reports.tsx`.
