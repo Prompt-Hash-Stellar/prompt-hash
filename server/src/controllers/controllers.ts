@@ -14,6 +14,13 @@ import {
 } from "../services/listingValidation";
 import { cacheGetOrLoad, cacheDel, cacheDelPattern, CACHE_KEYS } from "../services/cacheService";
 import { hashWalletAddress } from "../services/auditTrail";
+import {
+  CREATOR_DRAFTS_READ,
+  CREATOR_OWNED_READ,
+  mapPromptsPrivate,
+  mapPromptsPublic,
+  requireCreatorReadSession,
+} from "../services/creatorPrivacy";
 import mongoose from "mongoose";
 import { issuePreviewToken, recordPreviewEvent } from "../services/previewAnalytics";
 import { PreviewEvent } from "../models/PreviewEvent";
@@ -245,7 +252,8 @@ export const GetPrompts = async (
         .sort({ createdAt: -1 });
     });
 
-    return res.json(prompts);
+    // Public projection (#142): never serialize prompt content/private fields.
+    return res.json(mapPromptsPublic(Array.isArray(prompts) ? prompts : []));
   } catch (error) {
     console.error("Fetch prompts error:", error);
 
@@ -612,8 +620,14 @@ export const GetOwnedPrompts = async (
       return res.status(400).json({ error: "walletAddress is required." });
     }
 
+    const session = await requireCreatorReadSession(req, res, {
+      expectedAction: CREATOR_OWNED_READ,
+      urlWallet: walletAddress,
+    });
+    if (!session) return res;
+
     const user = await User.findOne({
-      walletAddress: walletAddress.toLowerCase(),
+      walletAddress: session.address,
     });
     if (!user) {
       return res.status(404).json({ error: "User not found." });
@@ -623,7 +637,7 @@ export const GetOwnedPrompts = async (
       .populate("owner", "username walletAddress")
       .sort({ createdAt: -1 });
 
-    return res.json(prompts);
+    return res.json(mapPromptsPrivate(prompts));
   } catch (err) {
     console.error("Get owned prompts error:", err);
     return res.status(500).json({
@@ -651,11 +665,15 @@ export const GetSavedPrompts = async (
       return res.status(404).json({ error: "User not found." });
     }
 
-    const prompts = await Prompt.find({ savedPrompts: user._id })
+    const prompts = await Prompt.find({
+      savedPrompts: user._id,
+      listingStatus: "published",
+      isActive: true,
+    })
       .populate("owner", "username walletAddress")
       .sort({ createdAt: -1 });
 
-    return res.json(prompts);
+    return res.json(mapPromptsPublic(prompts));
   } catch (err) {
     console.error("Get saved prompts error:", err);
     return res.status(500).json({
@@ -744,8 +762,14 @@ export const GetDraftPrompts = async (
       return res.status(400).json({ error: "walletAddress is required." });
     }
 
+    const session = await requireCreatorReadSession(req, res, {
+      expectedAction: CREATOR_DRAFTS_READ,
+      urlWallet: walletAddress,
+    });
+    if (!session) return res;
+
     const user = await User.findOne({
-      walletAddress: walletAddress.toLowerCase(),
+      walletAddress: session.address,
     });
     if (!user) {
       return res.status(404).json({ error: "User not found." });
@@ -758,7 +782,7 @@ export const GetDraftPrompts = async (
       .populate("owner", "username walletAddress")
       .sort({ updatedAt: -1 });
 
-    return res.json(drafts);
+    return res.json(mapPromptsPrivate(drafts));
   } catch (err) {
     console.error("Get draft prompts error:", err);
     return res.status(500).json({

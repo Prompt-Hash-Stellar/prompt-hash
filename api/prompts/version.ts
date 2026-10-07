@@ -5,6 +5,7 @@ import PromptVersion from "../../server/src/models/PromptVersion";
 import Purchase from "../../server/src/models/Purchase";
 import User from "../../server/src/models/User";
 import { publishPromptVersion } from "../../server/src/services/promptVersioning";
+import { requireCreatorVersionWriteSession } from "../../server/src/services/creatorPrivacy";
 
 async function handler(req: any, res: any) {
   await connectDb();
@@ -16,6 +17,14 @@ async function handler(req: any, res: any) {
 
     if (!promptId || !buyerWallet) {
       res.status(400).json({ error: "promptId and buyerWallet are required." });
+      return;
+    }
+
+    // Unpublished creator content must not escape through public version reads.
+    const prompt = await Prompt.findById(promptId).lean();
+    const listingStatus = (prompt as any)?.listingStatus;
+    if (listingStatus === "draft" || listingStatus === "ready") {
+      res.status(404).json({ error: "Prompt not found." });
       return;
     }
 
@@ -32,8 +41,6 @@ async function handler(req: any, res: any) {
       versionIndex,
     });
 
-    const prompt = await Prompt.findById(promptId).lean();
-
     res.status(200).json({
       versionIndex,
       content: version?.content ?? (prompt as any)?.content ?? null,
@@ -43,16 +50,23 @@ async function handler(req: any, res: any) {
     return;
   }
 
-  // POST /api/prompts/version — creator posts a new version.
+  // POST /api/prompts/version — creator posts a new version (#142).
+  // Identity comes from a signed creator session; body walletAddress is ignored.
   if (req.method === "POST") {
-    const { promptId, walletAddress, content, changeNote } = req.body ?? {};
+    const { promptId, content, changeNote } = req.body ?? {};
 
-    if (!promptId || !walletAddress || !content) {
-      res.status(400).json({ error: "promptId, walletAddress, and content are required." });
+    if (!promptId || !content) {
+      res.status(400).json({ error: "promptId and content are required." });
       return;
     }
 
-    const user = await User.findOne({ walletAddress: String(walletAddress).toLowerCase() });
+    const session = await requireCreatorVersionWriteSession(req, res, {
+      promptId: String(promptId),
+      content: String(content),
+    });
+    if (!session) return;
+
+    const user = await User.findOne({ walletAddress: session.address });
     if (!user) { res.status(404).json({ error: "User not found." }); return; }
 
     const prompt = await Prompt.findOne({ _id: promptId, owner: user._id });
@@ -62,7 +76,7 @@ async function handler(req: any, res: any) {
       promptId: String(prompt._id),
       content,
       changeNote,
-      createdBy: String(walletAddress),
+      createdBy: session.address,
     });
 
     res.status(201).json({ message: "Version posted.", versionIndex: nextVersion });
