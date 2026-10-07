@@ -1,207 +1,55 @@
-# Contributing & Local Setup — Prompt-Hash-Stellar
+# Contributing to Prompt Hash
 
-Welcome! Thanks for wanting to contribute. This guide helps you get the repo running locally (frontend + Soroban contracts) quickly and safely.
+Thank you for your interest in contributing to Prompt Hash! This document outlines the processes and expectations for contributors.
 
-Table of contents
-- Prerequisites
-- Quick checks
-- Step-by-step setup
-- Environment variables (.env.example)
-- Run the app & contracts
-- Project structure overview
-- Testing
-- How to contribute (PRs, style, tests)
+## Getting Started
 
----
+1. Fork the repository and create a branch from `main`
+2. Read the relevant documentation in `docs/`
+3. Check existing issues for anything similar to your proposed work
 
-## 1) Prerequisites (install these first)
+## Issue Templates
 
-- **Node.js** — LTS (recommended v18+)
-  - Check: `node -v`
-- **A package manager** — npm (comes with Node), or yarn, or pnpm (optional)
-  - Check: `npm -v` or `yarn -v` or `pnpm -v`
-- **Rust toolchain (stable)** and cargo
-  - Check: `rustc --version` and `cargo --version`
-- **Soroban CLI** (for Soroban contract tooling)
-  - Install: `cargo install --locked soroban-cli` (see Soroban docs)
-  - Check: `soroban --version`
-- (Recommended for wallet integration/testing) **Freighter Wallet** browser extension or equivalent Stellar wallet
-- **Git**
+We use structured issue templates to ensure consistency:
 
----
+- **[Hard GrantFox Issue](.github/ISSUE_TEMPLATE/hard-grantfox-issue.md)** — For complex, high-effort tasks requiring thorough testing and security review (200 points).
 
-## 2) Quick checks
+## Contributing a Hard Issue (GrantFox)
 
-Run these to confirm environment is ready:
+When working on a hard GrantFox issue:
 
-```bash
-node -v
-npm -v        # or yarn -v / pnpm -v
-rustc --version
-cargo --version
-soroban --version
-git --version
-```
+1. **Design Phase**: Post a short design note in the issue discussion before starting implementation.
+2. **Implementation**: Write focused tests covering the affected workflow.
+3. **Verification**: Ensure all acceptance criteria are met, including:
+   - Unit and integration tests
+   - Screenshots for UI changes
+   - Security review documentation
+4. **Documentation**: Update relevant docs (`README.md`, `docs/`) for any behavioral changes.
+5. **PR Submission**: Reference the issue number in your PR title and description.
 
-If any command is missing, follow the relevant official install docs (Node, Rust, Soroban).
+## Verification Rubric
 
----
+| Domain | Criteria |
+|--------|----------|
+| Core Logic | Correct, complete, no regressions |
+| Security | No new vulnerabilities, inputs validated |
+| Testing | Adequate unit + integration coverage |
+| Docs | README or CONTRIBUTING updated as needed |
 
-## 3) Step-by-step local setup
+## Reward Review
 
-1. Clone the repository
-   ```bash
-   git clone https://github.com/0xSlink/Prompt-Hash-Stellar.git
-   cd Prompt-Hash-Stellar
-   ```
+All hard issues require explicit reward review before closure:
 
-2. Install frontend dependencies
-   - Using npm:
-     ```bash
-     npm install
-     ```
-   - Or with pnpm:
-     ```bash
-     pnpm install
-     ```
-   - Or yarn:
-     ```bash
-     yarn install
-     ```
+- [ ] Difficulty aligns with estimated points
+- [ ] Acceptance criteria fully met
+- [ ] Tests pass with adequate coverage
+- [ ] Security review completed
+- [ ] Screenshots and documentation provided
 
-3. Contracts toolchain (build & test)
-   ```bash
-   cd contracts/prompt-hash
-   # build wasm
-   cargo build --release
-   # run contract unit tests (requires cargo + soroban dev dependencies)
-   cargo test
-   cd ../..
-   ```
+## Code of Conduct
 
-4. Create environment file
-   - Copy example and fill secrets:
-     ```bash
-     cp .env.example .env
-     ```
-   - See the `.env.example` section below for schema.
+Please be respectful and constructive in all interactions.
 
-5. Start the dev server (frontend)
-   ```bash
-   # from repo root
-   npm run dev
-   # or
-   pnpm dev
-   # or
-   yarn dev
-   ```
-   Open http://localhost:3000
+## Reporting Security Issues
 
-6. Optional: run a local Soroban node or use testnet
-   - If you want full local integration testing, follow Soroban docs to run a local network or target `testnet` RPC via `SOROBAN_RPC_URL`.
-
----
-
-## 4) Example `.env.example` schema
-
-Create `.env` from `.env.example`. **Never commit secrets.**
-
-```env
-# Frontend
-NEXT_PUBLIC_API_URL=http://localhost:3000/api
-NEXT_PUBLIC_APP_ENV=development
-
-# Soroban / Stellar
-SOROBAN_RPC_URL=https://rpc.testnet.soroban.stellar.org
-SOROBAN_NETWORK=testnet
-NEXT_PUBLIC_SOROBAN_RPC_URL=${SOROBAN_RPC_URL}
-
-# Wallet / App keys (for local testing only — DO NOT COMMIT)
-# DEPLOYER_SECRET should be kept private. Use key management or .env on developers' machines only.
-DEPLOYER_SECRET=<ed25519-secret>
-ADMIN_ADDRESS=<G... stellar address>
-
-# Optional analytic or 3rd party keys
-# EXAMPLE: SENTRY_DSN=...
-```
-
----
-
-## 5) Project structure (quick map)
-
-Root overview (trimmed):
-
-```
-/ (repo root)
-├─ src/                         # Next.js frontend
-│  ├─ pages/                    # Pages router (page components)
-│  │  ├─ prompts/[id].tsx       # Prompt preview page (new)
-│  │  └─ ...                    # other pages
-│  ├─ components/               # Reusable React components (PurchaseProgress, UI)
-│  └─ styles/                   # Tailwind / global styles
-├─ contracts/                   # Soroban smart contracts (Rust)
-│  └─ prompt-hash/
-│     ├─ src/                   # Rust contract source, storage, events, tests
-│     ├─ Cargo.toml
-│     └─ tests/                 # Contract tests (unit)
-├─ package.json                 # Frontend scripts & dependencies
-├─ Cargo.toml (workspace)       # Rust workspace config
-├─ .env.example                 # Example env file
-└─ README.md
-```
-
-Folder descriptions (1-line):
-- `/src/pages` — Next.js pages (routing). Add route files here.
-- `/src/components` — UI components (PurchaseProgress modal, Prompt card).
-- `/contracts` — Rust/Soroban contracts and tests. Build and test with `cargo`.
-- `/scripts` — utility scripts (if present).
-- `.github/` — CI, PR templates, issue templates.
-
----
-
-## 6) Testing
-
-- Frontend unit / integration tests (if present):
-  ```bash
-  npm test        # or yarn test / pnpm test
-  ```
-
-- Contract tests:
-  ```bash
-  cd contracts/prompt-hash
-  cargo test
-  ```
-
-- Lint / format:
-  - Frontend: `npm run lint` / `npm run format`
-  - Rust: `cargo fmt` / `cargo clippy`
-
----
-
-## 7) How to contribute (PR checklist)
-
-When opening a PR:
-- Create a feature branch off `main` (or `develop` if used): `git checkout -b feat/your-feature`
-- Keep commits focused & atomic.
-- Add or update tests for new logic (frontend unit tests / contract tests).
-- Run linters & formatters locally.
-- Update docs (if new behavior or env vars).
-- In PR description: explain what you changed, why, and how to test manually.
-- Tag reviewers and add an issue reference if applicable.
-
----
-
-## 8) Security & best practices
-
-- **Never** commit secrets or private keys. Use `.env` locally and add `.env` to `.gitignore`.
-- Use a hardware wallet / Freighter for real transactions.
-- Prefer testnet for development and manual testing.
-
----
-
-## 9) Need help?
-
-- Open an issue with the `help wanted` label.
-- Join the project discussions or ping maintainers in the issue/PR.
-
-Thanks for contributing — your help makes Prompt-Hash-Stellar better!
+Do not file public issues for security vulnerabilities. Instead, contact the maintainers directly.
