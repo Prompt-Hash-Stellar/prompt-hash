@@ -5,11 +5,22 @@ import WebhookDeliveryLog from "../models/WebhookDeliveryLog";
 import ReconciliationReport, { MismatchType } from "../models/ReconciliationReport";
 import { dispatchEvent } from "./webhookDispatcher";
 
-const RECONCILIATION_SECRET = process.env.RECONCILIATION_SECRET || "reconciliation-secret-key-123";
+/**
+ * Reconciliation attestations must never fall back to a publicly known key.
+ * Resolve at call time to support safe key rotation between requests.
+ */
+function reconciliationSigningKey(explicit?: string): string {
+  const secret = explicit ?? process.env.RECONCILIATION_SECRET;
+  if (typeof secret !== "string" || Buffer.byteLength(secret, "utf8") < 32) {
+    throw new Error("Reconciliation signing is not configured.");
+  }
+  return secret;
+}
 
-export function signReport(data: object, secret: string = RECONCILIATION_SECRET): string {
+export function signReport(data: object, secret?: string): string {
   const serialized = JSON.stringify(data);
-  return `sha256=${createHmac("sha256", secret).update(serialized).digest("hex")}`;
+  const signingKey = reconciliationSigningKey(secret);
+  return `sha256=${createHmac("sha256", signingKey).update(serialized).digest("hex")}`;
 }
 
 export interface RunReconciliationOptions {
@@ -180,6 +191,13 @@ export async function executeRepair(reportId: string, approvedBy: string) {
     throw new Error(`Reconciliation report ${reportId} not found`);
   }
 
+  // Generating a dry-run report never authorizes any settlement mutation.
+  // Require an explicit non-dry-run report as well as the route's privileged
+  // approval role before touching fulfillment or webhook state.
+  if (report.isDryRun !== false) {
+    throw new Error("Dry-run reconciliation reports cannot be repaired.");
+  }
+
   if (report.approvedBy && report.approvedBy !== approvedBy) {
     throw new Error(`Report was already approved by ${report.approvedBy}`);
   }
@@ -192,27 +210,11 @@ export async function executeRepair(reportId: string, approvedBy: string) {
 
     try {
       if (item.type === "missing_fulfillment") {
-        await FulfillmentRecord.findOneAndUpdate(
-          { promptId: item.promptId, buyerWallet: item.buyerWallet.toLowerCase() },
-          {
-            $set: {
-              status: "delivered",
-              txHash: item.txHash || "",
-              deliveryAttemptedAt: new Date(),
-            },
-            $push: {
-              auditLog: {
-                status: "delivered",
-                note: `Repaired via reconciliation report ${reportId} by ${approvedBy}`,
-                at: new Date(),
-              },
-            },
-          },
-          { upsert: true }
-        );
-        item.repairStatus = "completed";
-        item.repairedAt = new Date();
-        repairedCount++;
+        // A missing delivery record is not evidence that delivery completed.
+        // Only the actual unlock/delivery service may attest that transition;
+        // never fabricate a "delivered" state from a purchase ledger row.
+        item.repairStatus = "skipped";
+        item.repairError = "Delivery needs independent verification before status can change.";
       } else if (item.type === "webhook_undelivered") {
         await dispatchEvent(item.buyerWallet, "PromptPurchased", {
           promptId: item.promptId,

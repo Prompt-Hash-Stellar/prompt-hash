@@ -1,4 +1,6 @@
 import express from "express";
+import { requireWalletPrincipal } from "../auth/walletPrincipalHttp";
+import { requireFulfillmentService } from "../auth/fulfillmentService";
 import {
   GetBuyerVersion,
   GetPromptVersions,
@@ -12,7 +14,8 @@ export const versioningRouter = express.Router();
 versioningRouter.post("/update", PostPromptUpdate);
 // List version history for a prompt (metadata only, no content).
 versioningRouter.get("/:promptId/history", GetPromptVersions);
-// Record a purchase at the current version index.
-versioningRouter.post("/purchase", RecordPurchase);
+// Index only purchase state already verified by the trusted backend.
+// A browser wallet session cannot mint this entitlement record.
+versioningRouter.post("/purchase", requireFulfillmentService, RecordPurchase);
 // Get the version a specific buyer purchased (for unlock).
-versioningRouter.get("/buyer-version", GetBuyerVersion);
+versioningRouter.get("/buyer-version", requireWalletPrincipal, GetBuyerVersion);

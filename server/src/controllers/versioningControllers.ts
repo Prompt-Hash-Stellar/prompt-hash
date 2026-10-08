@@ -5,27 +5,37 @@ import PromptVersion from "../models/PromptVersion";
 import Purchase from "../models/Purchase";
 import User from "../models/User";
 import { publishPromptVersion } from "../services/promptVersioning";
+import { requireCreatorVersionWriteSession } from "../services/creatorPrivacy";
 
 export const PostPromptUpdate = async (req: Request, res: Response): Promise<Response> => {
   try {
     await connectDb();
-    const { promptId, walletAddress, content, changeNote } = req.body;
+    // walletAddress in the body is intentionally ignored for identity (#142).
+    const { promptId, content, changeNote } = req.body;
 
-    if (!promptId || !walletAddress || !content) {
-      return res.status(400).json({ error: "promptId, walletAddress, and content are required." });
+    if (!promptId || !content) {
+      return res.status(400).json({ error: "promptId and content are required." });
     }
 
-    const user = await User.findOne({ walletAddress: walletAddress.toLowerCase() });
+    const session = await requireCreatorVersionWriteSession(req, res, {
+      promptId: String(promptId),
+      content: String(content),
+    });
+    if (!session) return res;
+
+    const user = await User.findOne({ walletAddress: session.address });
     if (!user) return res.status(404).json({ error: "User not found." });
 
     const prompt = await Prompt.findOne({ _id: promptId, owner: user._id });
-    if (!prompt) return res.status(403).json({ error: "Prompt not found or not owned by this wallet." });
+    if (!prompt) {
+      return res.status(403).json({ error: "Prompt not found or not owned by this wallet." });
+    }
 
     const { versionIndex: nextVersion } = await publishPromptVersion({
       promptId: String(prompt._id),
       content,
       changeNote,
-      createdBy: walletAddress,
+      createdBy: session.address,
     });
 
     return res.status(201).json({ message: "Version posted.", versionIndex: nextVersion });
@@ -115,28 +125,42 @@ export const RecordPurchase = async (req: Request, res: Response): Promise<Respo
 
 export const GetBuyerVersion = async (req: Request, res: Response): Promise<Response> => {
   try {
-    await connectDb();
-    const { promptId, buyerWallet } = req.query;
-
-    if (!promptId || !buyerWallet) {
-      return res.status(400).json({ error: "promptId and buyerWallet query params are required." });
+    // A buyerWallet query parameter cannot authorize a private version read.
+    const buyerWallet = res.locals.walletPrincipal?.address;
+    if (typeof buyerWallet !== "string") {
+      return res.status(401).json({ error: "Wallet session required." });
     }
+    const { promptId, buyerWallet: claimedWallet } = req.query;
+    if (!promptId || typeof promptId !== "string") {
+      return res.status(400).json({ error: "promptId is required." });
+    }
+    if (claimedWallet !== undefined &&
+        (typeof claimedWallet !== "string" ||
+         claimedWallet.toLowerCase() !== buyerWallet.toLowerCase())) {
+      return res.status(403).json({ error: "Wallet does not match authenticated session." });
+    }
+    await connectDb();
 
     const purchase = await Purchase.findOne({
-      promptId: String(promptId),
-      buyerWallet: String(buyerWallet).toLowerCase(),
+      promptId,
+      buyerWallet: buyerWallet.toLowerCase(),
     });
 
     if (!purchase) {
       return res.status(404).json({ error: "No purchase record found." });
     }
 
+    // Unpublished creator content must not escape through public version reads.
+    const prompt = await Prompt.findById(promptId).lean();
+    const listingStatus = (prompt as any)?.listingStatus;
+    if (listingStatus === "draft" || listingStatus === "ready") {
+      return res.status(404).json({ error: "Prompt not found." });
+    }
+
     const version = await PromptVersion.findOne({
       promptId: String(promptId),
       versionIndex: purchase.versionIndex,
     });
-
-    const prompt = await Prompt.findById(promptId).lean();
 
     return res.json({
       versionIndex: purchase.versionIndex,

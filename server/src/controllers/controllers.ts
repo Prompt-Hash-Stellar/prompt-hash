@@ -14,6 +14,13 @@ import {
 } from "../services/listingValidation";
 import { cacheGetOrLoad, cacheDel, cacheDelPattern, CACHE_KEYS } from "../services/cacheService";
 import { hashWalletAddress } from "../services/auditTrail";
+import {
+  CREATOR_DRAFTS_READ,
+  CREATOR_OWNED_READ,
+  mapPromptsPrivate,
+  mapPromptsPublic,
+  requireCreatorReadSession,
+} from "../services/creatorPrivacy";
 import mongoose from "mongoose";
 import { issuePreviewToken, recordPreviewEvent } from "../services/previewAnalytics";
 import { PreviewEvent } from "../models/PreviewEvent";
@@ -245,7 +252,8 @@ export const GetPrompts = async (
         .sort({ createdAt: -1 });
     });
 
-    return res.json(prompts);
+    // Public projection (#142): never serialize prompt content/private fields.
+    return res.json(mapPromptsPublic(Array.isArray(prompts) ? prompts : []));
   } catch (error) {
     console.error("Fetch prompts error:", error);
 
@@ -262,15 +270,19 @@ export const CreateUser = async (
   res: Response,
 ): Promise<Response<any>> => {
   try {
-    await connectDb();
-
-    const { walletAddress, username } = await req.body;
-
-    if (!walletAddress) {
-      return res.status(400).json({
-        error: "Wallet address is required",
-      });
+    // The wallet session is the identity, not a caller-supplied walletAddress.
+    const walletAddress = res.locals.walletPrincipal?.address;
+    if (typeof walletAddress !== "string") {
+      return res.status(401).json({ error: "Wallet session required." });
     }
+    const { walletAddress: claimedWallet, username } = req.body ?? {};
+    if (claimedWallet !== undefined &&
+        (typeof claimedWallet !== "string" ||
+         claimedWallet.toLowerCase() !== walletAddress.toLowerCase())) {
+      return res.status(403).json({ error: "Wallet does not match authenticated session." });
+    }
+
+    await connectDb();
 
     // Check if user already exists
     const existingUser = await User.findOne({
@@ -426,16 +438,24 @@ export const SubmitPromptReport = async (
   res: Response,
 ): Promise<Response<any>> => {
   try {
-    await connectDb();
+    // The reporter is the verified wallet session, not a spoofable body value.
+    const principal = res.locals.walletPrincipal?.address;
+    if (typeof principal !== "string") {
+      return res.status(401).json({ error: "Wallet session required." });
+    }
+    const { promptId, reporterAddress, reason, description } = req.body ?? {};
+    if (reporterAddress !== undefined &&
+        (typeof reporterAddress !== "string" || reporterAddress.toLowerCase() !== principal.toLowerCase())) {
+      return res.status(403).json({ error: "Wallet does not match authenticated session." });
+    }
 
-    const { promptId, reporterAddress, reason, description } = req.body;
-
-    // Validate required fields
-    if (!promptId || !reporterAddress || !reason) {
+    // Validate required fields after proving the caller's identity.
+    if (!promptId || !reason) {
       return res.status(400).json({
-        error: "Missing required fields: promptId, reporterAddress, reason",
+        error: "Missing required fields: promptId, reason",
       });
     }
+    await connectDb();
 
     // Validate reason
     const validReasons = ["quality-issue", "misleading-content", "plagiarism", "harmful-content", "copyright", "other"];
@@ -456,7 +476,7 @@ export const SubmitPromptReport = async (
     // Create new report
     const newReport = new Report({
       promptId,
-      reporterAddress: reporterAddress.toLowerCase(),
+      reporterAddress: principal.toLowerCase(),
       reason,
       description: description || "",
     });
@@ -481,17 +501,11 @@ export const GetPromptReports = async (
   res: Response,
 ): Promise<Response<any>> => {
   try {
+    // Trusted report-admin bearer is verified by route middleware before
+    // any DB read. Ordinary signed wallets are not moderator credentials.
     await connectDb();
-
-    // Check admin authentication (placeholder)
-    const adminToken = req.headers.authorization?.split(" ")[1];
-    if (!adminToken) {
-      return res.status(401).json({
-        error: "Unauthorized: Admin token required",
-      });
-    }
-
-    const { searchParams } = new URL(req.url);
+    // Express supplies a relative req.url for mounted routes.
+    const { searchParams } = new URL(req.url, "http://localhost");
     const promptId = searchParams.get("promptId");
 
     const query: any = {};
@@ -503,11 +517,9 @@ export const GetPromptReports = async (
       .sort({ createdAt: -1 });
 
     return res.json(reports);
-  } catch (err) {
-    console.error("Get reports error:", err);
-    return res.status(500).json({
-      error: (err as Error).message || "Failed to fetch reports",
-    });
+  } catch {
+    // Errors may include sensitive moderation records; no raw body/log echo.
+    return res.status(500).json({ error: "Failed to fetch reports." });
   }
 };
 
@@ -554,15 +566,20 @@ export const GetPreviewStats = async (
   res: Response,
 ): Promise<Response<any>> => {
   try {
-    await connectDb();
-    const { walletAddress } = req.query;
-
-    if (!walletAddress) {
-      return res.status(400).json({ error: "walletAddress is required." });
+    // The preview totals are owner-only analytics, unlike public preview
+    // ingestion. A query wallet can select only the signed session owner.
+    const principal = res.locals.walletPrincipal?.address;
+    if (typeof principal !== "string") {
+      return res.status(401).json({ error: "Wallet session required." });
     }
-
+    const requestedWallet = req.query.walletAddress;
+    if (requestedWallet !== undefined &&
+        (typeof requestedWallet !== "string" || requestedWallet.toLowerCase() !== principal.toLowerCase())) {
+      return res.status(403).json({ error: "Wallet does not match authenticated session." });
+    }
+    await connectDb();
     const user = await User.findOne({
-      walletAddress: String(walletAddress).toLowerCase(),
+      walletAddress: principal.toLowerCase(),
     });
     if (!user) {
       return res.status(404).json({ error: "User not found." });
@@ -612,8 +629,14 @@ export const GetOwnedPrompts = async (
       return res.status(400).json({ error: "walletAddress is required." });
     }
 
+    const session = await requireCreatorReadSession(req, res, {
+      expectedAction: CREATOR_OWNED_READ,
+      urlWallet: walletAddress,
+    });
+    if (!session) return res;
+
     const user = await User.findOne({
-      walletAddress: walletAddress.toLowerCase(),
+      walletAddress: session.address,
     });
     if (!user) {
       return res.status(404).json({ error: "User not found." });
@@ -623,7 +646,7 @@ export const GetOwnedPrompts = async (
       .populate("owner", "username walletAddress")
       .sort({ createdAt: -1 });
 
-    return res.json(prompts);
+    return res.json(mapPromptsPrivate(prompts));
   } catch (err) {
     console.error("Get owned prompts error:", err);
     return res.status(500).json({
@@ -637,25 +660,37 @@ export const GetSavedPrompts = async (
   res: Response,
 ): Promise<Response<any>> => {
   try {
-    await connectDb();
     const { walletAddress } = req.params;
-
     if (!walletAddress) {
       return res.status(400).json({ error: "walletAddress is required." });
     }
 
+    // The URL is only a selector; the signed wallet session owns this read.
+    const principal = res.locals.walletPrincipal?.address;
+    if (typeof principal !== "string") {
+      return res.status(401).json({ error: "Wallet session required." });
+    }
+    if (walletAddress.toLowerCase() !== principal.toLowerCase()) {
+      return res.status(403).json({ error: "Wallet does not match authenticated session." });
+    }
+
+    await connectDb();
     const user = await User.findOne({
-      walletAddress: walletAddress.toLowerCase(),
+      walletAddress: principal.toLowerCase(),
     });
     if (!user) {
       return res.status(404).json({ error: "User not found." });
     }
 
-    const prompts = await Prompt.find({ savedPrompts: user._id })
+    const prompts = await Prompt.find({
+      savedPrompts: user._id,
+      listingStatus: "published",
+      isActive: true,
+    })
       .populate("owner", "username walletAddress")
       .sort({ createdAt: -1 });
 
-    return res.json(prompts);
+    return res.json(mapPromptsPublic(prompts));
   } catch (err) {
     console.error("Get saved prompts error:", err);
     return res.status(500).json({
@@ -744,8 +779,14 @@ export const GetDraftPrompts = async (
       return res.status(400).json({ error: "walletAddress is required." });
     }
 
+    const session = await requireCreatorReadSession(req, res, {
+      expectedAction: CREATOR_DRAFTS_READ,
+      urlWallet: walletAddress,
+    });
+    if (!session) return res;
+
     const user = await User.findOne({
-      walletAddress: walletAddress.toLowerCase(),
+      walletAddress: session.address,
     });
     if (!user) {
       return res.status(404).json({ error: "User not found." });
@@ -758,7 +799,7 @@ export const GetDraftPrompts = async (
       .populate("owner", "username walletAddress")
       .sort({ updatedAt: -1 });
 
-    return res.json(drafts);
+    return res.json(mapPromptsPrivate(drafts));
   } catch (err) {
     console.error("Get draft prompts error:", err);
     return res.status(500).json({
@@ -838,8 +879,14 @@ export const GetPayoutSettings = async (
   res: Response,
 ): Promise<Response<any>> => {
   try {
+    const walletAddress = res.locals.walletPrincipal?.address;
+    if (typeof walletAddress !== "string") {
+      return res.status(401).json({ error: "Wallet session required." });
+    }
+    if (req.params.walletAddress?.toLowerCase() !== walletAddress.toLowerCase()) {
+      return res.status(403).json({ error: "Wallet does not match authenticated session." });
+    }
     await connectDb();
-    const { walletAddress } = req.params;
     const user = await User.findOne({ walletAddress: walletAddress.toLowerCase() });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -855,8 +902,14 @@ export const UpdatePayoutSettings = async (
   res: Response,
 ): Promise<Response<any>> => {
   try {
+    const walletAddress = res.locals.walletPrincipal?.address;
+    if (typeof walletAddress !== "string") {
+      return res.status(401).json({ error: "Wallet session required." });
+    }
+    if (req.params.walletAddress?.toLowerCase() !== walletAddress.toLowerCase()) {
+      return res.status(403).json({ error: "Wallet does not match authenticated session." });
+    }
     await connectDb();
-    const { walletAddress } = req.params;
     const { payoutAddress, signature, signedMessage } = req.body;
 
     // Validate StrKey

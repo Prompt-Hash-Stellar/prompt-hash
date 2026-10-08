@@ -5,6 +5,8 @@ import PromptVersion from "../../server/src/models/PromptVersion";
 import Purchase from "../../server/src/models/Purchase";
 import User from "../../server/src/models/User";
 import { publishPromptVersion } from "../../server/src/services/promptVersioning";
+import { requireCreatorVersionWriteSession } from "../../server/src/services/creatorPrivacy";
+import { readWalletPrincipal, walletAuthenticationFailure } from "../../server/src/auth/walletPrincipalHttp";
 
 async function handler(req: any, res: any) {
   await connectDb();
@@ -12,27 +14,52 @@ async function handler(req: any, res: any) {
   // GET /api/prompts/version?promptId=&buyerWallet=
   // Returns the versioned content a buyer is entitled to.
   if (req.method === "GET") {
+    let principal;
+    try {
+      principal = await readWalletPrincipal(req);
+    } catch (error) {
+      walletAuthenticationFailure(res, error);
+      return;
+    }
     const { promptId, buyerWallet } = req.query ?? {};
 
-    if (!promptId || !buyerWallet) {
-      res.status(400).json({ error: "promptId and buyerWallet are required." });
+    if (typeof promptId !== "string" || !promptId) {
+      res.status(400).json({ error: "promptId is required." });
+      return;
+    }
+    if (buyerWallet !== undefined &&
+        (typeof buyerWallet !== "string" ||
+         buyerWallet.toLowerCase() !== principal.address.toLowerCase())) {
+      res.status(403).json({ error: "Wallet does not match authenticated session." });
+      return;
+    }
+
+    // Unpublished creator content must not escape through public version reads.
+    const prompt = await Prompt.findById(promptId).lean();
+    const listingStatus = (prompt as any)?.listingStatus;
+    if (listingStatus === "draft" || listingStatus === "ready") {
+      res.status(404).json({ error: "Prompt not found." });
       return;
     }
 
     const purchase = await Purchase.findOne({
       promptId: String(promptId),
-      buyerWallet: String(buyerWallet).toLowerCase(),
+      buyerWallet: principal.address.toLowerCase(),
     });
 
-    // If no purchase record, fall back to v1 (legacy purchase before versioning).
-    const versionIndex = purchase?.versionIndex ?? 1;
+    // A verified wallet session proves identity, not entitlement. Do not serve
+    // private version content to an authenticated wallet without a purchase.
+    if (!purchase) {
+      res.status(404).json({ error: "No purchase record found." });
+      return;
+    }
+    // Legacy purchases without a recorded version index refer to v1.
+    const versionIndex = purchase.versionIndex ?? 1;
 
     const version = await PromptVersion.findOne({
       promptId: String(promptId),
       versionIndex,
     });
-
-    const prompt = await Prompt.findById(promptId).lean();
 
     res.status(200).json({
       versionIndex,
@@ -43,16 +70,23 @@ async function handler(req: any, res: any) {
     return;
   }
 
-  // POST /api/prompts/version — creator posts a new version.
+  // POST /api/prompts/version — creator posts a new version (#142).
+  // Identity comes from a signed creator session; body walletAddress is ignored.
   if (req.method === "POST") {
-    const { promptId, walletAddress, content, changeNote } = req.body ?? {};
+    const { promptId, content, changeNote } = req.body ?? {};
 
-    if (!promptId || !walletAddress || !content) {
-      res.status(400).json({ error: "promptId, walletAddress, and content are required." });
+    if (!promptId || !content) {
+      res.status(400).json({ error: "promptId and content are required." });
       return;
     }
 
-    const user = await User.findOne({ walletAddress: String(walletAddress).toLowerCase() });
+    const session = await requireCreatorVersionWriteSession(req, res, {
+      promptId: String(promptId),
+      content: String(content),
+    });
+    if (!session) return;
+
+    const user = await User.findOne({ walletAddress: session.address });
     if (!user) { res.status(404).json({ error: "User not found." }); return; }
 
     const prompt = await Prompt.findOne({ _id: promptId, owner: user._id });
@@ -62,7 +96,7 @@ async function handler(req: any, res: any) {
       promptId: String(prompt._id),
       content,
       changeNote,
-      createdBy: String(walletAddress),
+      createdBy: session.address,
     });
 
     res.status(201).json({ message: "Version posted.", versionIndex: nextVersion });
