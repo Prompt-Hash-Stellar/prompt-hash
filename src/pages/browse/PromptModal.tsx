@@ -334,8 +334,13 @@ export const PromptModal: React.FC<PromptModalProps> = ({
   useEffect(() => {
     if (isOpen && wallet?.address) {
       setIsCheckingAccess(true);
-      PromptHashClient.checkAccess(itemId, wallet.address)
-        .then((hasAccess) => setStatus(hasAccess ? "PURCHASED_LOCKED" : "IDLE"))
+      PromptHashClient.checkAccess(
+        browserStellarConfig,
+        wallet.address,
+        itemId,
+      ).then((hasAccess) =>
+        setStatus(hasAccess ? "PURCHASED_LOCKED" : "IDLE"),
+      )
         .catch(() => setStatus("IDLE"))
         .finally(() => setIsCheckingAccess(false));
     }
@@ -366,7 +371,9 @@ export const PromptModal: React.FC<PromptModalProps> = ({
     error: purchaseError,
   } = useAsyncTransaction(
     async () => {
-      if (!wallet?.address) throw new Error("Wallet connection required.");
+      if (!wallet?.address || !wallet.signTransaction) {
+        throw new Error("Wallet connection required.");
+      }
       
       // Check network state before purchase
       const networkState = detectNetworkMismatch(
@@ -383,11 +390,23 @@ export const PromptModal: React.FC<PromptModalProps> = ({
         throw new Error("Please connect your wallet first");
       }
       
-      setStatus("AWAITING_APPROVAL");
-      const mockHash = "tx_" + Math.random().toString(16).slice(2, 14);
-      setTxHash(mockHash);
-      setStatus("CONFIRMING");
-      return await PromptHashClient.purchasePrompt(itemId, wallet.address);
+      const result = await PromptHashClient.purchasePrompt(
+        itemId,
+        wallet.address,
+        {
+          live: {
+            config: browserStellarConfig,
+            signer: { signTransaction: wallet.signTransaction },
+          },
+          onPhase: (phase) => {
+            setStatus(
+              phase === "signature" ? "AWAITING_APPROVAL" : "CONFIRMING",
+            );
+          },
+        },
+      );
+      setTxHash(result.txHash);
+      return result;
     },
     {
       onSuccess: (data) => {
