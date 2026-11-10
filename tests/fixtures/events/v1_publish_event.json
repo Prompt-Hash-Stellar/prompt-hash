@@ -1,0 +1,15 @@
+{
+  "_comment": "Versioned fixture for the PromptCreated / publish event (contract schema v1).",
+  "schema_version": 1,
+  "event_type": "PromptCreated",
+  "topics": {
+    "prompt_id": 42
+  },
+  "data": {
+    "creator": "GBMXHCFKH7EZGDKL7PXMZFQ6MFRCQOQMQVZNXPYWVB2VVQKPZQB5JVF",
+    "price_stroops": 10000000,
+    "asset": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+  },
+  "ledger": 1234567,
+  "timestamp": "2024-01-15T10:00:00Z"
+}

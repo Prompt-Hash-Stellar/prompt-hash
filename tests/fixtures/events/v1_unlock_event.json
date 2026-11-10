@@ -1,0 +1,12 @@
+{
+  "_comment": "Versioned fixture for the EscrowReleased / unlock event (contract schema v1).",
+  "schema_version": 1,
+  "event_type": "EscrowReleased",
+  "topics": {
+    "prompt_id": 42,
+    "buyer": "GDSOHLMUIZFADTX2YXTW6HJVSBXMHFQSYAGJBMHULNZPQTYSBKZSKJR7"
+  },
+  "data": {},
+  "ledger": 1234569,
+  "timestamp": "2024-01-15T10:10:00Z"
+}
