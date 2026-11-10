@@ -226,3 +226,109 @@ PromptHash retries failed deliveries up to 3 times with exponential backoff (2s,
 ```typescript
 import type { PromptInfo, PurchaseResult, ClientConfig } from "@prompthash/sdk";
 ```
+
+---
+
+## Standalone Purchase Receipt Verification
+
+<!-- Issue #238 -->
+
+Buyers and auditors can verify any purchase receipt **without relying on the hosted PromptHash app** — all checks run against the public [Stellar Horizon API](https://horizon.stellar.org).
+
+### What a receipt contains
+
+| Field | Description |
+|-------|-------------|
+| `promptId` | PromptHash internal prompt identifier |
+| `version` | Content revision at time of purchase |
+| `buyer` | Stellar address of the buyer |
+| `txHash` | Stellar transaction hash confirming the purchase |
+| `contractId` | Soroban contract ID hosting the marketplace |
+| `contentHash` | SHA-256 hex of the encrypted prompt content |
+| `purchasedAt` | UNIX timestamp (seconds) of the purchase |
+| `amountStroops` | Amount paid in stroops (1 XLM = 10,000,000 stroops) |
+| `nonce` | Optional replay-protection nonce |
+
+### Verify from exported receipt data
+
+```typescript
+import {
+  verifyReceipt,
+  verifyReceiptFromExport,
+  checkReceiptIntegrity,
+  type PurchaseReceipt,
+} from "@/lib/receipts/receiptVerifier";
+
+// Option A — verify a structured receipt object
+const receipt: PurchaseReceipt = {
+  promptId: "prompt_abc123",
+  version: 2,
+  buyer: "GABC...YOURADDRESS",
+  txHash: "a1b2c3...",
+  contractId: "CDLZ...",
+  contentHash: "e3b0c4...",
+  purchasedAt: 1700000000,
+  amountStroops: "14000000",
+};
+
+const result = await verifyReceipt(receipt, "mainnet");
+console.log(result.status);       // "valid" | "tampered" | "tx_not_found" | ...
+console.log(result.message);      // Human-readable explanation
+console.log(result.explorerUrl);  // Stellar Expert link for the tx
+
+// Option B — verify a JSON string exported from the app
+const exported = `{"promptId":"prompt_abc123","buyer":"GABC...","txHash":"a1b2c3...",...}`;
+const result2 = await verifyReceiptFromExport(exported, "mainnet");
+
+// Option C — offline tamper check using a stored fingerprint
+const { computedFingerprint } = checkReceiptIntegrity(receipt, "");
+// Store computedFingerprint. Later, to verify nothing changed:
+const { intact } = checkReceiptIntegrity(receipt, computedFingerprint);
+console.log(intact); // true if unmodified
+```
+
+### Verification status codes
+
+| Status | Meaning |
+|--------|---------|
+| `valid` | Receipt is authentic; transaction confirmed on-chain |
+| `tampered` | One or more receipt fields are missing or malformed |
+| `tx_not_found` | Transaction hash not found on the Stellar network |
+| `tx_failed` | Transaction exists but did not succeed |
+| `buyer_mismatch` | On-chain source account does not match the receipt buyer |
+| `error` | Horizon was unreachable or returned an unexpected error |
+
+### Tamper detection
+
+Any modification to a receipt field (`promptId`, `buyer`, `txHash`, `contentHash`, `amountStroops`, etc.) changes the receipt fingerprint and will be detected:
+
+```typescript
+const tampered = { ...receipt, amountStroops: "1" }; // attacker changes amount
+const { intact } = checkReceiptIntegrity(tampered, storedFingerprint);
+console.log(intact); // false — tampering detected
+```
+
+### Running offline (no internet)
+
+Use `checkReceiptIntegrity` for tamper detection when Stellar Horizon is unavailable.
+The fingerprint is a deterministic SHA-256 hash of all receipt fields; it never
+requires a network call.
+
+### CLI usage (Node.js)
+
+```bash
+# Install dependencies (only @stellar/stellar-sdk is needed at runtime)
+npm install @stellar/stellar-sdk
+
+# Verify from a saved receipt file
+node -e "
+const { verifyReceiptFromExport } = require('./dist/lib/receipts/receiptVerifier');
+const fs = require('fs');
+const exported = fs.readFileSync('./my-receipt.json', 'utf8');
+verifyReceiptFromExport(exported, 'mainnet').then(r => {
+  console.log('Status:', r.status);
+  console.log('Message:', r.message);
+  console.log('Explorer:', r.explorerUrl);
+});
+"
+```
